@@ -8,6 +8,6 @@ services:
     startCommand: gunicorn app:app
     envVars:
       - key: OCS_API_KEY
-        value: b@vB?c8FtI*FYq7j@p6d*Vj3oQAT9z
+        value: your_ocs_api_key_here
       - key: FLASK_DEBUG
         value: "False"
