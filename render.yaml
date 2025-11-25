@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: ocs-api
+    env: python
+    plan: free
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: OCS_API_KEY
+        value: b@vB?c8FtI*FYq7j@p6d*Vj3oQAT9z
+      - key: FLASK_DEBUG
+        value: "False"
