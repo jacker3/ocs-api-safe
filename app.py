@@ -1,10 +1,15 @@
 import os
 import requests
+import logging
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
@@ -16,56 +21,137 @@ class OCSAPI:
         self.session = requests.Session()
         self.session.headers.update({
             'accept': 'application/json',
-            'X-API-Key': self.api_key
+            'X-API-Key': self.api_key,
+            'User-Agent': 'OCS-Integration/1.0'
         })
+        logger.info(f"OCS API инициализирован, ключ: {'установлен' if api_key else 'ОТСУТСТВУЕТ'}")
     
     def _make_request(self, endpoint: str, params=None):
         try:
             url = f"{self.base_url}/{endpoint}"
-            response = self.session.get(url, params=params, timeout=15)
-            return response.json() if response.status_code == 200 else None
+            logger.info(f"🔧 DEBUG: Запрос к OCS API: {url}")
+            logger.info(f"🔧 DEBUG: Параметры: {params}")
+            logger.info(f"🔧 DEBUG: API Key present: {bool(self.api_key)}")
+            
+            response = self.session.get(url, params=params, timeout=30, verify=True)
+            
+            logger.info(f"🔧 DEBUG: Статус ответа: {response.status_code}")
+            logger.info(f"🔧 DEBUG: Заголовки ответа: {dict(response.headers)}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"✅ DEBUG: Успешный ответ, тип данных: {type(data)}")
+                logger.info(f"✅ DEBUG: Пример данных: {str(data)[:500]}...")
+                return data
+            elif response.status_code == 401:
+                logger.error("❌ DEBUG: 401 Unauthorized - Неверный API ключ")
+                return None
+            elif response.status_code == 403:
+                logger.error("❌ DEBUG: 403 Forbidden - Нет доступа")
+                return None
+            else:
+                logger.error(f"❌ DEBUG: HTTP {response.status_code} - {response.text}")
+                return None
+                
+        except requests.exceptions.Timeout:
+            logger.error("❌ DEBUG: Таймаут запроса")
+            return None
+        except requests.exceptions.SSLError as e:
+            logger.error(f"❌ DEBUG: SSL ошибка: {e}")
+            return None
         except Exception as e:
-            print(f"API Error: {e}")
+            logger.error(f"❌ DEBUG: Исключение: {e}")
             return None
 
 # Инициализация API
-api = OCSAPI(api_key=os.getenv('OCS_API_KEY'))
+api_key = os.getenv('OCS_API_KEY')
+logger.info(f"🔧 DEBUG: API ключ из окружения: {'***установлен***' if api_key else 'НЕ НАЙДЕН!'}")
+if api_key:
+    logger.info(f"🔧 DEBUG: Длина ключа: {len(api_key)} символов")
+    
+api = OCSAPI(api_key=api_key)
 
 @app.route('/')
 def home():
     return jsonify({
         "status": "success", 
         "message": "OCS API работает на Render.com!",
+        "api_key_status": "configured" if api_key else "missing",
         "endpoints": {
             "test": "/api/test",
+            "debug": "/api/debug/ocs",
             "categories": "/api/categories", 
             "products": "/api/products/category?category=all&shipment_city=Красноярск",
-            "search": "/api/products/search?q=процессор&shipment_city=Красноярск"
+            "test_data": "/api/test-data/categories"
         }
     })
 
+@app.route('/api/debug/ocs')
+def debug_ocs_connection():
+    """Диагностика подключения к OCS API"""
+    api_key = os.getenv('OCS_API_KEY')
+    test_url = "https://connector.b2b.ocs.ru/api/v2/catalog/categories"
+    
+    debug_info = {
+        "api_key_present": bool(api_key),
+        "api_key_length": len(api_key) if api_key else 0,
+        "test_url": test_url,
+        "render_service": "ocs-api-safe.onrender.com"
+    }
+    
+    try:
+        headers = {
+            'accept': 'application/json',
+            'X-API-Key': api_key or 'missing'
+        }
+        
+        response = requests.get(test_url, headers=headers, timeout=10)
+        debug_info.update({
+            "ocs_response_status": response.status_code,
+            "ocs_response_body_preview": response.text[:200] if response.text else "Empty response"
+        })
+        
+    except Exception as e:
+        debug_info["error"] = str(e)
+    
+    return jsonify(debug_info)
+
 @app.route('/api/test')
 def test_api():
+    logger.info("Тестовый запрос /api/test")
+    
+    # Проверяем подключение к OCS API
     cities = api._make_request("logistic/shipment/cities")
+    
     return jsonify({
         "success": True,
-        "message": "✅ OCS API подключено успешно",
-        "available_cities": cities or ["Красноярск", "Москва", "Санкт-Петербург"],
-        "api_status": "active"
+        "message": "✅ API работает",
+        "api_key_configured": bool(api_key),
+        "ocs_api_connection": "success" if cities else "failed",
+        "available_cities": cities or ["Красноярск", "Москва", "Санкт-Петербург"]
     })
 
 @app.route('/api/categories')
 def get_categories():
+    logger.info("Запрос категорий")
     categories = api._make_request("catalog/categories")
+    
     return jsonify({
         "success": True,
-        "data": categories or []
+        "data": categories or [],
+        "debug": {
+            "api_key_present": bool(api_key),
+            "response_type": type(categories).__name__,
+            "response_length": len(categories) if categories else 0
+        }
     })
 
 @app.route('/api/products/category')
 def get_products_by_category():
     category = request.args.get('category', 'all')
     shipment_city = request.args.get('shipment_city', 'Красноярск')
+    
+    logger.info(f"Запрос товаров: категория={category}, город={shipment_city}")
     
     endpoint = f"catalog/categories/{category}/products"
     params = {
@@ -74,33 +160,57 @@ def get_products_by_category():
     }
     
     products = api._make_request(endpoint, params)
+    
     return jsonify({
         "success": True,
         "data": products or {"result": []},
-        "total_count": len(products.get('result', [])) if products else 0
+        "total_count": len(products.get('result', [])) if products else 0,
+        "debug": {
+            "category": category,
+            "city": shipment_city,
+            "api_key_present": bool(api_key)
+        }
     })
 
-@app.route('/api/products/search')
-def search_products():
-    search_term = request.args.get('q', '')
-    shipment_city = request.args.get('shipment_city', 'Красноярск')
-    
-    if not search_term:
-        return jsonify({"success": False, "error": "Не указан поисковый запрос"}), 400
-    
-    endpoint = "catalog/categories/all/products"
-    params = {
-        'shipmentcity': shipment_city,
-        'search': search_term,
-        'limit': 100
+@app.route('/api/test-data/categories')
+def test_categories():
+    """Тестовые данные для проверки фронтенда"""
+    test_data = [
+        {"id": 1, "name": "Компьютерные комплектующие", "children": [
+            {"id": 2, "name": "Процессоры"},
+            {"id": 3, "name": "Видеокарты"}
+        ]},
+        {"id": 4, "name": "Периферия", "children": [
+            {"id": 5, "name": "Клавиатуры"},
+            {"id": 6, "name": "Мыши"}
+        ]}
+    ]
+    return jsonify({"success": True, "data": test_data})
+
+@app.route('/api/test-data/products')
+def test_products():
+    """Тестовые товары"""
+    test_products = {
+        "result": [
+            {
+                "product": {
+                    "id": "test-1",
+                    "partNumber": "TEST-001",
+                    "producer": "Intel",
+                    "itemName": "Тестовый процессор Intel Core i5",
+                    "category": "Процессоры"
+                },
+                "price": {
+                    "order": {"value": 15000.00, "currency": "RUB"}
+                },
+                "locations": [
+                    {"location": "Склад Москва", "quantity": {"value": 5}},
+                    {"location": "Склад Красноярск", "quantity": {"value": 3}}
+                ]
+            }
+        ]
     }
-    
-    products = api._make_request(endpoint, params)
-    return jsonify({
-        "success": True,
-        "data": products or {"result": []},
-        "total_count": len(products.get('result', [])) if products else 0
-    })
+    return jsonify({"success": True, "data": test_products})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
