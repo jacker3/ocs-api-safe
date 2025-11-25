@@ -211,7 +211,24 @@ def test_products():
         ]
     }
     return jsonify({"success": True, "data": test_products})
-
+@app.route('/api/debug/ip')
+def debug_ip():
+    """Определяет IP адрес сервера Render"""
+    try:
+        # Запрос к внешнему сервису для определения IP
+        ip_response = requests.get('https://api.ipify.org?format=json', timeout=5)
+        ip_info = ip_response.json()
+        
+        return jsonify({
+            "service": "Render.com",
+            "your_ip": ip_info.get('ip'),
+            "note": "Добавьте этот IP в белый список OCS"
+        })
+    except:
+        return jsonify({
+            "error": "Не удалось определить IP",
+            "note": "IP адреса Render.com динамические, нужно уточнить у поддержки OCS"
+        })
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
