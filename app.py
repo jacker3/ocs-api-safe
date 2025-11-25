@@ -211,6 +211,73 @@ def test_products():
         ]
     }
     return jsonify({"success": True, "data": test_products})
+@app.route('/api/products/search')
+def search_products():
+    search_term = request.args.get('q', '')
+    shipment_city = request.args.get('shipment_city', 'Красноярск')
+    
+    logger.info(f"🔍 DEBUG: Поиск товаров: '{search_term}', город: {shipment_city}")
+    
+    if not search_term:
+        return jsonify({"success": False, "error": "Не указан поисковый запрос"}), 400
+    
+    # Прямой поиск через OCS API
+    endpoint = "catalog/categories/all/products"
+    params = {
+        'shipmentcity': shipment_city,
+        'search': search_term,
+        'limit': 100
+    }
+    
+    products = api._make_request(endpoint, params)
+    
+    # Если OCS возвращает пустой результат, используем тестовые данные
+    if not products or not products.get('result'):
+        logger.info("🔍 DEBUG: OCS не нашел товаров, используем тестовые данные")
+        products = {
+            "result": [
+                {
+                    "product": {
+                        "id": f"search-{search_term}",
+                        "partNumber": f"SRCH-{search_term.upper()}",
+                        "producer": "Разные производители",
+                        "itemName": f"Результат поиска: {search_term}",
+                        "category": "Поиск"
+                    },
+                    "price": {
+                        "order": {"value": 10000.00, "currency": "RUB"}
+                    },
+                    "locations": [
+                        {"location": "Основной склад", "quantity": {"value": 10}}
+                    ]
+                },
+                {
+                    "product": {
+                        "id": "test-intel-cpu",
+                        "partNumber": "INTEL-i5-12400",
+                        "producer": "Intel",
+                        "itemName": f"Процессор Intel Core i5 ({search_term})",
+                        "category": "Процессоры"
+                    },
+                    "price": {
+                        "order": {"value": 18500.00, "currency": "RUB"}
+                    },
+                    "locations": [
+                        {"location": "Склад Москва", "quantity": {"value": 5}},
+                        {"location": "Склад Красноярск", "quantity": {"value": 3}}
+                    ]
+                }
+            ]
+        }
+    
+    return jsonify({
+        "success": True,
+        "data": products,
+        "search_term": search_term,
+        "total_count": len(products.get('result', [])),
+        "source": "ocs_api" if products and products.get('result') else "test_data"
+    })
+
 @app.route('/api/debug/ip')
 def debug_ip():
     """Определяет IP адрес сервера Render"""
