@@ -208,6 +208,12 @@ def get_categories():
         logger.info("Используем тестовые категории")
         categories = TEST_CATEGORIES
     
+    # ✅ ДОБАВЛЕНО: Логирование структуры категорий для отладки
+    logger.info(f"🔧 DEBUG: Структура категорий: {len(categories) if categories else 0} элементов")
+    if categories:
+        for i, cat in enumerate(categories[:3]):  # Логируем первые 3 категории
+            logger.info(f"🔧 DEBUG: Категория {i}: id={cat.get('id')}, name={cat.get('name')}")
+    
     return jsonify({
         "success": True,
         "data": categories,
@@ -220,11 +226,15 @@ def get_products_by_category():
     category = request.args.get('category', 'all')
     shipment_city = request.args.get('shipment_city', 'Красноярск')
     
-    # Исправляем undefined категорию
-    if category == 'undefined' or not category:
+    # ✅ УЛУЧШЕННАЯ ВАЛИДАЦИЯ КАТЕГОРИИ
+    if category in ['undefined', 'null', '', '0', 0, None]:
         category = 'all'
+        logger.info("🔧 DEBUG: Категория исправлена на 'all'")
     
-    logger.info(f"Запрос товаров: категория='{category}', город='{shipment_city}'")
+    # Приводим к строке (OCS API ожидает строки)
+    category = str(category)
+    
+    logger.info(f"🔧 DEBUG: Запрос товаров - категория='{category}' (тип: {type(category)}), город='{shipment_city}'")
     
     # Пробуем получить реальные товары от OCS
     endpoint = f"catalog/categories/{category}/products"
@@ -247,6 +257,7 @@ def get_products_by_category():
         "source": "ocs_api" if products and products != TEST_PRODUCTS else "test_data",
         "debug": {
             "requested_category": category,
+            "category_type": str(type(category)),
             "city": shipment_city
         }
     })
