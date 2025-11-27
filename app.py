@@ -197,27 +197,104 @@ def test_api():
     })
 
 @app.route('/api/categories')
-def get_categories(self):
-        """Получение дерева товарных категорий"""
-        return self._make_request("catalog/categories")
+def get_categories():
+    logger.info("Запрос категорий")
+    
+    # Пробуем получить реальные категории от OCS
+    categories = api._make_request("catalog/categories")
+    
+    # Если OCS не отвечает или возвращает пустой результат, используем тестовые данные
+    if not categories:
+        logger.info("Используем тестовые категории")
+        categories = TEST_CATEGORIES
+    
+    return jsonify({
+        "success": True,
+        "data": categories,
+        "source": "ocs_api" if categories and categories != TEST_CATEGORIES else "test_data",
+        "total_count": len(categories) if categories else 0
+    })
 
 @app.route('/api/products/category')
-def get_products_by_category(self, categories: str, shipment_city: str, **params):
-        """Получение информации о товарах по категориям"""
-        endpoint = f"catalog/categories/{categories}/products"
-        params['shipmentcity'] = shipment_city
-        # Ограничиваем количество для производительности
-        params['limit'] = params.get('limit', 100)
-        return self._make_request(endpoint, params=params)
+def get_products_by_category():
+    category = request.args.get('category', 'all')
+    shipment_city = request.args.get('shipment_city', 'Красноярск')
+    
+    # Исправляем undefined категорию
+    if category == 'undefined' or not category:
+        category = 'all'
+    
+    logger.info(f"Запрос товаров: категория='{category}', город='{shipment_city}'")
+    
+    # Пробуем получить реальные товары от OCS
+    endpoint = f"catalog/categories/{category}/products"
+    params = {
+        'shipmentcity': shipment_city,
+        'limit': 100
+    }
+    
+    products = api._make_request(endpoint, params)
+    
+    # Если OCS не отвечает или возвращает пустой результат, используем тестовые данные
+    if not products or not products.get('result'):
+        logger.info("Используем тестовые товары")
+        products = TEST_PRODUCTS
+    
+    return jsonify({
+        "success": True,
+        "data": products,
+        "total_count": len(products.get('result', [])),
+        "source": "ocs_api" if products and products != TEST_PRODUCTS else "test_data",
+        "debug": {
+            "requested_category": category,
+            "city": shipment_city
+        }
+    })
 
 @app.route('/api/products/search')
-def search_products(self, search_term: str, shipment_city: str, **params):
-        """Поиск товаров по названию"""
-        endpoint = f"catalog/categories/all/products"
-        params['shipmentcity'] = shipment_city
-        params['search'] = search_term
-        params['limit'] = params.get('limit', 100)
-        return self._make_request(endpoint, params=params)
+def search_products():
+    search_term = request.args.get('q', '')
+    shipment_city = request.args.get('shipment_city', 'Красноярск')
+    
+    logger.info(f"Поиск товаров: запрос='{search_term}', город='{shipment_city}'")
+    
+    if not search_term:
+        return jsonify({"success": False, "error": "Не указан поисковый запрос"}), 400
+    
+    # Пробуем поиск через OCS API
+    endpoint = "catalog/categories/all/products"
+    params = {
+        'shipmentcity': shipment_city,
+        'search': search_term,
+        'limit': 100
+    }
+    
+    products = api._make_request(endpoint, params)
+    
+    # Фильтруем тестовые товары по поисковому запросу
+    filtered_test_products = {
+        "result": [
+            product for product in TEST_PRODUCTS["result"]
+            if search_term.lower() in product["product"]["itemName"].lower() or
+               search_term.lower() in product["product"]["producer"].lower() or
+               search_term.lower() in product["product"]["category"].lower()
+        ]
+    }
+    
+    # Если OCS не нашел товаров, используем отфильтрованные тестовые данные
+    if not products or not products.get('result'):
+        products = filtered_test_products
+        source = "test_data"
+    else:
+        source = "ocs_api"
+    
+    return jsonify({
+        "success": True,
+        "data": products,
+        "search_term": search_term,
+        "total_count": len(products.get('result', [])),
+        "source": source
+    })
 
 @app.route('/api/test-products')
 def test_products():
