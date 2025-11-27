@@ -1,6 +1,7 @@
 import os
 import requests
 import logging
+import time
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -32,7 +33,7 @@ class OCSAPI:
             logger.info(f"🔧 DEBUG: Запрос к OCS API: {url}")
             logger.info(f"🔧 DEBUG: Параметры: {params}")
             
-            # ✅ УВЕЛИЧЕН ТАЙМАУТ ДО 60 СЕКУНД
+            # Увеличенный таймаут
             response = self.session.get(url, params=params, timeout=60, verify=True)
             
             logger.info(f"🔧 DEBUG: Статус ответа: {response.status_code}")
@@ -69,31 +70,31 @@ api = OCSAPI(api_key=api_key)
 # Тестовые данные для разработки
 TEST_CATEGORIES = [
     {
-        "id": 1,
+        "id": "1",
         "name": "Компьютерные комплектующие",
         "children": [
-            {"id": 2, "name": "Процессоры", "productCount": 45},
-            {"id": 3, "name": "Видеокарты", "productCount": 23},
-            {"id": 4, "name": "Материнские платы", "productCount": 15},
-            {"id": 5, "name": "Оперативная память", "productCount": 32}
+            {"id": "2", "name": "Процессоры", "productCount": 45},
+            {"id": "3", "name": "Видеокарты", "productCount": 23},
+            {"id": "4", "name": "Материнские платы", "productCount": 15},
+            {"id": "5", "name": "Оперативная память", "productCount": 32}
         ]
     },
     {
-        "id": 6,
+        "id": "6",
         "name": "Периферия",
         "children": [
-            {"id": 7, "name": "Клавиатуры", "productCount": 28},
-            {"id": 8, "name": "Мыши", "productCount": 35},
-            {"id": 9, "name": "Мониторы", "productCount": 18}
+            {"id": "7", "name": "Клавиатуры", "productCount": 28},
+            {"id": "8", "name": "Мыши", "productCount": 35},
+            {"id": "9", "name": "Мониторы", "productCount": 18}
         ]
     },
     {
-        "id": 10,
+        "id": "10",
         "name": "Компьютеры и ноутбуки",
         "children": [
-            {"id": 11, "name": "Системные блоки", "productCount": 12},
-            {"id": 12, "name": "Ноутбуки", "productCount": 25},
-            {"id": 13, "name": "Моноблоки", "productCount": 8}
+            {"id": "11", "name": "Системные блоки", "productCount": 12},
+            {"id": "12", "name": "Ноутбуки", "productCount": 25},
+            {"id": "13", "name": "Моноблоки", "productCount": 8}
         ]
     }
 ]
@@ -106,7 +107,8 @@ TEST_PRODUCTS = {
                 "partNumber": "INTEL-i5-12400",
                 "producer": "Intel",
                 "itemName": "Процессор Intel Core i5-12400",
-                "category": "Процессоры"
+                "category": "Процессоры",
+                "categoryId": "2"
             },
             "price": {
                 "order": {"value": 18500.00, "currency": "RUB"}
@@ -122,7 +124,8 @@ TEST_PRODUCTS = {
                 "partNumber": "NV-RTX-4060",
                 "producer": "NVIDIA",
                 "itemName": "Видеокарта NVIDIA RTX 4060",
-                "category": "Видеокарты"
+                "category": "Видеокарты",
+                "categoryId": "3"
             },
             "price": {
                 "order": {"value": 45000.00, "currency": "RUB"}
@@ -138,7 +141,8 @@ TEST_PRODUCTS = {
                 "partNumber": "KING-16GB-DDR4",
                 "producer": "Kingston",
                 "itemName": "Оперативная память Kingston 16GB DDR4",
-                "category": "Оперативная память"
+                "category": "Оперативная память",
+                "categoryId": "5"
             },
             "price": {
                 "order": {"value": 3500.00, "currency": "RUB"}
@@ -153,7 +157,8 @@ TEST_PRODUCTS = {
                 "partNumber": "LOGITECH-K120",
                 "producer": "Logitech",
                 "itemName": "Клавиатура Logitech K120",
-                "category": "Клавиатуры"
+                "category": "Клавиатуры",
+                "categoryId": "7"
             },
             "price": {
                 "order": {"value": 1200.00, "currency": "RUB"}
@@ -177,7 +182,8 @@ def home():
             "categories": "/api/categories", 
             "products": "/api/products/category?category=all&shipment_city=Красноярск",
             "search": "/api/products/search?q=процессор&shipment_city=Красноярск",
-            "test_data": "/api/test-products"
+            "test_data": "/api/test-products",
+            "debug_categories": "/api/debug/categories"
         }
     })
 
@@ -209,10 +215,10 @@ def get_categories():
         logger.info("Используем тестовые категории")
         categories = TEST_CATEGORIES
     
-    # ✅ ДОБАВЛЕНО: Логирование структуры категорий для отладки
+    # Логирование структуры категорий для отладки
     logger.info(f"🔧 DEBUG: Структура категорий: {len(categories) if categories else 0} элементов")
     if categories:
-        for i, cat in enumerate(categories[:3]):  # Логируем первые 3 категории
+        for i, cat in enumerate(categories[:3]):
             logger.info(f"🔧 DEBUG: Категория {i}: id={cat.get('id')}, name={cat.get('name')}")
     
     return jsonify({
@@ -227,37 +233,86 @@ def get_products_by_category():
     category = request.args.get('category', 'all')
     shipment_city = request.args.get('shipment_city', 'Красноярск')
     
-    # ✅ ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ ДИАГНОСТИКИ
-    logger.info(f"🔧 DEBUG: Получен запрос с category='{category}' (тип: {type(category)})")
+    # Детальное логирование входных данных
+    logger.info(f"🔧 DEBUG: ====== NEW CATEGORY REQUEST ======")
+    logger.info(f"🔧 DEBUG: Raw category from request: '{category}'")
+    logger.info(f"🔧 DEBUG: Request args: {dict(request.args)}")
     
-    # ✅ УЛУЧШЕННАЯ ВАЛИДАЦИЯ - логируем КАЖДЫЙ шаг
+    # Сохраняем оригинальное значение для отладки
     original_category = category
-    if category in ['undefined', 'null', '', '0', 0, None]:
-        logger.warning(f"🔧 DEBUG: Категория '{original_category}' исправлена на 'all'")
+    
+    # Минимальная коррекция - только действительно невалидные значения
+    if category in ['undefined', 'null']:
+        logger.warning(f"🔧 DEBUG: Correcting invalid category '{original_category}' -> 'all'")
         category = 'all'
-    elif category == 'all':
-        logger.info("🔧 DEBUG: Запрошены все категории")
-    else:
-        logger.info(f"🔧 DEBUG: Запрошена конкретная категория: {category}")
+    elif not category or category.strip() == '':
+        logger.warning(f"🔧 DEBUG: Empty category -> 'all'")
+        category = 'all'
     
-    # Приводим к строке (OCS API ожидает строки)
-    category = str(category)
+    category = str(category).strip()
     
-    logger.info(f"🔧 DEBUG: Финальный запрос - категория='{category}', город='{shipment_city}'")
+    logger.info(f"🔧 DEBUG: Final category for API: '{category}'")
+    logger.info(f"🔧 DEBUG: Shipment city: '{shipment_city}'")
     
-    # Пробуем получить реальные товары от OCS
+    # Быстрый ответ с тестовыми данными если категория не 'all'
+    if category != 'all':
+        logger.info(f"🔧 DEBUG: Specific category requested: {category}")
+        
+        # Фильтруем тестовые данные по категории
+        filtered_products = {
+            "result": [
+                product for product in TEST_PRODUCTS["result"]
+                if str(product["product"].get("categoryId") or product["product"].get("category") or "").lower() == category.lower()
+            ]
+        }
+        
+        # Если нашли товары в тестовых данных - возвращаем сразу
+        if filtered_products["result"]:
+            logger.info(f"🔧 DEBUG: Using test data for category {category}, found {len(filtered_products['result'])} items")
+            return jsonify({
+                "success": True,
+                "data": filtered_products,
+                "total_count": len(filtered_products["result"]),
+                "source": "test_data",
+                "debug": {
+                    "original_category": original_category,
+                    "final_category": category,
+                    "note": "Using test data - OCS API timeout avoided"
+                }
+            })
+    
+    # Для категории 'all' или если не нашли в тестовых данных - пробуем OCS API
     endpoint = f"catalog/categories/{category}/products"
     params = {
         'shipmentcity': shipment_city,
-        'limit': 100
+        'limit': 50  # Уменьшаем лимит для скорости
     }
     
+    logger.info(f"🔧 DEBUG: Attempting OCS API request: {endpoint}")
+    start_time = time.time()
+    
+    # Пробуем OCS API с увеличенным таймаутом
     products = api._make_request(endpoint, params)
     
-    # Если OCS не отвечает или возвращает пустой результат, используем тестовые данные
+    request_time = time.time() - start_time
+    logger.info(f"🔧 DEBUG: OCS API request took {request_time:.2f} seconds")
+    
+    # Если OCS API не отвечает - используем тестовые данные
     if not products or not products.get('result'):
-        logger.info("Используем тестовые товары")
-        products = TEST_PRODUCTS
+        logger.warning(f"🔧 DEBUG: OCS API failed or empty, using test data")
+        
+        # Для категории 'all' возвращаем все тестовые товары
+        if category == 'all':
+            products = TEST_PRODUCTS
+        else:
+            # Для конкретной категории фильтруем
+            filtered_products = {
+                "result": [
+                    product for product in TEST_PRODUCTS["result"]
+                    if category.lower() in (product["product"].get("category") or "").lower()
+                ]
+            }
+            products = filtered_products if filtered_products["result"] else TEST_PRODUCTS
     
     return jsonify({
         "success": True,
@@ -267,8 +322,8 @@ def get_products_by_category():
         "debug": {
             "original_category": original_category,
             "final_category": category,
-            "category_type": str(type(category)),
-            "city": shipment_city
+            "request_time_seconds": round(request_time, 2),
+            "ocs_api_used": products and products != TEST_PRODUCTS
         }
     })
 
@@ -354,6 +409,37 @@ def debug_ocs_connection():
         
     except Exception as e:
         debug_info["error"] = str(e)
+    
+    return jsonify(debug_info)
+
+@app.route('/api/debug/categories')
+def debug_categories():
+    """Специальная страница для отладки категорий"""
+    logger.info("🔧 DEBUG: Accessing debug categories endpoint")
+    
+    # Пробуем получить реальные категории от OCS
+    categories = api._make_request("catalog/categories")
+    
+    # Если OCS не отвечает, используем тестовые данные
+    if not categories:
+        categories = TEST_CATEGORIES
+        source = "test_data"
+    else:
+        source = "ocs_api"
+    
+    debug_info = {
+        "success": True,
+        "total_categories": len(categories) if categories else 0,
+        "data_source": source,
+        "categories_sample": categories[:3] if categories else [],
+        "test_categories_structure": TEST_CATEGORIES,
+        "javascript_help": "Use OCS.inspectCategoryStructure() in browser console",
+        "debug_endpoints": {
+            "test_api": "/api/test",
+            "all_categories": "/api/categories",
+            "products_all": "/api/products/category?category=all&shipment_city=Красноярск"
+        }
+    }
     
     return jsonify(debug_info)
 
