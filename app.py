@@ -32,7 +32,8 @@ class OCSAPI:
             logger.info(f"🔧 DEBUG: Запрос к OCS API: {url}")
             logger.info(f"🔧 DEBUG: Параметры: {params}")
             
-            response = self.session.get(url, params=params, timeout=30, verify=True)
+            # ✅ УВЕЛИЧЕН ТАЙМАУТ ДО 60 СЕКУНД
+            response = self.session.get(url, params=params, timeout=60, verify=True)
             
             logger.info(f"🔧 DEBUG: Статус ответа: {response.status_code}")
             
@@ -51,7 +52,7 @@ class OCSAPI:
                 return None
                 
         except requests.exceptions.Timeout:
-            logger.error("❌ DEBUG: Таймаут запроса")
+            logger.error("❌ DEBUG: Таймаут запроса (60 секунд)")
             return None
         except requests.exceptions.SSLError as e:
             logger.error(f"❌ DEBUG: SSL ошибка: {e}")
@@ -226,15 +227,23 @@ def get_products_by_category():
     category = request.args.get('category', 'all')
     shipment_city = request.args.get('shipment_city', 'Красноярск')
     
-    # ✅ УЛУЧШЕННАЯ ВАЛИДАЦИЯ КАТЕГОРИИ
+    # ✅ ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ ДИАГНОСТИКИ
+    logger.info(f"🔧 DEBUG: Получен запрос с category='{category}' (тип: {type(category)})")
+    
+    # ✅ УЛУЧШЕННАЯ ВАЛИДАЦИЯ - логируем КАЖДЫЙ шаг
+    original_category = category
     if category in ['undefined', 'null', '', '0', 0, None]:
+        logger.warning(f"🔧 DEBUG: Категория '{original_category}' исправлена на 'all'")
         category = 'all'
-        logger.info("🔧 DEBUG: Категория исправлена на 'all'")
+    elif category == 'all':
+        logger.info("🔧 DEBUG: Запрошены все категории")
+    else:
+        logger.info(f"🔧 DEBUG: Запрошена конкретная категория: {category}")
     
     # Приводим к строке (OCS API ожидает строки)
     category = str(category)
     
-    logger.info(f"🔧 DEBUG: Запрос товаров - категория='{category}' (тип: {type(category)}), город='{shipment_city}'")
+    logger.info(f"🔧 DEBUG: Финальный запрос - категория='{category}', город='{shipment_city}'")
     
     # Пробуем получить реальные товары от OCS
     endpoint = f"catalog/categories/{category}/products"
@@ -256,7 +265,8 @@ def get_products_by_category():
         "total_count": len(products.get('result', [])),
         "source": "ocs_api" if products and products != TEST_PRODUCTS else "test_data",
         "debug": {
-            "requested_category": category,
+            "original_category": original_category,
+            "final_category": category,
             "category_type": str(type(category)),
             "city": shipment_city
         }
