@@ -5,7 +5,7 @@ services:
     plan: free
     branch: main
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn --timeout 60 --workers 2 app:app
     envVars:
       - key: OCS_API_KEY
         value: your_ocs_api_key_here
