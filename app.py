@@ -131,13 +131,10 @@ def get_cities():
 @app.route('/api/products/category')
 def get_products_by_category():
     if not ocs_api:
-        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
+        return jsonify({"success": False, "error": "API ключ не настроen"}), 500
     
     category = request.args.get('category', 'all')
     shipment_city = request.args.get('shipment_city', 'Красноярск')
-    
-    # Логируем параметры для отладки
-    logger.info(f"Products request - category: '{category}', city: '{shipment_city}'")
     
     if category in ['undefined', 'null', '']:
         category = 'all'
