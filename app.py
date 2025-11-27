@@ -14,25 +14,25 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# ✅ CORS для Beget и локальной разработки
-CORS(app, resources={
-    r"/api/*": {
-        "origins": ["*"],  # Разрешаем все домены для тестирования
-        "methods": ["GET", "OPTIONS"],
-        "allow_headers": ["Content-Type", "X-API-Key"]
-    }
-})
+# ✅ УПРОЩЕННАЯ CORS НАСТРОЙКА - РАЗРЕШАЕМ ВСЕ
+CORS(app)
 
 @app.after_request
 def after_request(response):
+    # ✅ ОБЯЗАТЕЛЬНО добавляем CORS заголовки ко всем ответам
     response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, X-API-Key')
-    response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-API-Key')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
     return response
 
 @app.route('/api/<path:path>', methods=['OPTIONS'])
 def options_handler(path):
-    return '', 200
+    response = jsonify({'status': 'CORS preflight'})
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', '*')
+    response.headers.add('Access-Control-Allow-Methods', '*')
+    return response
 
 class OCSAPI:
     def __init__(self, api_key: str):
@@ -44,28 +44,22 @@ class OCSAPI:
             'X-API-Key': self.api_key,
             'User-Agent': 'OCS-Integration/1.0'
         })
-        logger.info(f"OCS API инициализирован, ключ: {'установлен' if api_key else 'ОТСУТСТВУЕТ'}")
+        logger.info(f"OCS API инициализирован")
     
     def _make_request(self, endpoint: str, params=None):
         """Базовый метод для запросов к OCS API"""
         try:
             url = f"{self.base_url}/{endpoint}"
-            logger.info(f"🔧 OCS API Request: {url}")
+            logger.info(f"🔧 OCS API: {endpoint}")
             
-            response = self.session.get(url, params=params, timeout=30, verify=True)
-            logger.info(f"🔧 OCS API Response: {response.status_code}")
+            response = self.session.get(url, params=params, timeout=15, verify=True)
             
             if response.status_code == 200:
-                data = response.json()
-                logger.info(f"✅ OCS API Success: {len(data) if isinstance(data, list) else 'object'}")
-                return data
+                return response.json()
             else:
-                logger.error(f"❌ OCS API Error {response.status_code}: {response.text}")
+                logger.error(f"❌ OCS API Error {response.status_code}")
                 return None
                 
-        except requests.exceptions.Timeout:
-            logger.error("❌ OCS API Timeout")
-            return None
         except Exception as e:
             logger.error(f"❌ OCS API Exception: {e}")
             return None
@@ -82,8 +76,7 @@ class OCSAPI:
         """Получение информации о товарах по категориям"""
         endpoint = f"catalog/categories/{categories}/products"
         params['shipmentcity'] = shipment_city
-        # Ограничиваем количество для производительности
-        params['limit'] = params.get('limit', 100)
+        params['limit'] = params.get('limit', 50)
         return self._make_request(endpoint, params=params)
     
     def search_products(self, search_term: str, shipment_city: str, **params):
@@ -91,73 +84,13 @@ class OCSAPI:
         endpoint = f"catalog/categories/all/products"
         params['shipmentcity'] = shipment_city
         params['search'] = search_term
-        params['limit'] = params.get('limit', 100)
+        params['limit'] = params.get('limit', 50)
         return self._make_request(endpoint, params=params)
 
 # Инициализация API
 api_key = os.getenv('OCS_API_KEY')
 logger.info(f"🔧 API Key: {'***установлен***' if api_key else 'НЕ НАЙДЕН!'}")
 ocs_api = OCSAPI(api_key=api_key)
-
-# Тестовые данные для fallback
-TEST_CATEGORIES = [
-    {
-        "id": "1",
-        "name": "Компьютерные комплектующие",
-        "children": [
-            {"id": "2", "name": "Процессоры", "productCount": 45},
-            {"id": "3", "name": "Видеокарты", "productCount": 23},
-            {"id": "4", "name": "Материнские платы", "productCount": 15},
-            {"id": "5", "name": "Оперативная память", "productCount": 32}
-        ]
-    },
-    {
-        "id": "6", 
-        "name": "Периферия",
-        "children": [
-            {"id": "7", "name": "Клавиатуры", "productCount": 28},
-            {"id": "8", "name": "Мыши", "productCount": 35},
-            {"id": "9", "name": "Мониторы", "productCount": 18}
-        ]
-    }
-]
-
-TEST_PRODUCTS = {
-    "result": [
-        {
-            "product": {
-                "id": "test-1",
-                "partNumber": "INTEL-i5-12400",
-                "producer": "Intel",
-                "itemName": "Процессор Intel Core i5-12400",
-                "category": "Процессоры"
-            },
-            "price": {
-                "order": {"value": 18500.00, "currency": "RUB"}
-            },
-            "locations": [
-                {"location": "Склад Москва", "quantity": {"value": 12}},
-                {"location": "Склад Красноярск", "quantity": {"value": 5}}
-            ]
-        },
-        {
-            "product": {
-                "id": "test-2",
-                "partNumber": "NV-RTX-4060", 
-                "producer": "NVIDIA",
-                "itemName": "Видеокарта NVIDIA RTX 4060",
-                "category": "Видеокарты"
-            },
-            "price": {
-                "order": {"value": 45000.00, "currency": "RUB"}
-            },
-            "locations": [
-                {"location": "Склад Москва", "quantity": {"value": 3}},
-                {"location": "Склад СПб", "quantity": {"value": 2}}
-            ]
-        }
-    ]
-}
 
 @app.route('/')
 def home():
@@ -200,15 +133,10 @@ def get_categories():
     # Используем рабочий метод из примера
     categories = ocs_api.get_categories()
     
-    # Fallback на тестовые данные
-    if not categories:
-        logger.info("🔄 Using test categories")
-        categories = TEST_CATEGORIES
-    
     return jsonify({
         "success": True,
         "data": categories,
-        "source": "ocs_api" if categories and categories != TEST_CATEGORIES else "test_data",
+        "source": "ocs_api",
         "total_count": len(categories) if categories else 0
     })
 
@@ -222,7 +150,7 @@ def get_cities():
     return jsonify({
         "success": True,
         "data": cities or ["Красноярск", "Москва", "Санкт-Петербург"],
-        "source": "ocs_api" if cities else "test_data"
+        "source": "ocs_api"
     })
 
 @app.route('/api/products/category')
@@ -230,7 +158,7 @@ def get_products_by_category():
     """Получение товаров по категории"""
     category = request.args.get('category', 'all')
     shipment_city = request.args.get('shipment_city', 'Красноярск')
-    limit = request.args.get('limit', 100)
+    limit = request.args.get('limit', 50)
     
     logger.info(f"🔧 Fetching products: category={category}, city={shipment_city}")
     
@@ -245,16 +173,11 @@ def get_products_by_category():
         limit=limit
     )
     
-    # Fallback на тестовые данные
-    if not products or not products.get('result'):
-        logger.info("🔄 Using test products")
-        products = TEST_PRODUCTS
-    
     return jsonify({
-        "success": True,
+        "success": True if products else False,
         "data": products,
-        "total_count": len(products.get('result', [])),
-        "source": "ocs_api" if products and products != TEST_PRODUCTS else "test_data",
+        "total_count": len(products.get('result', [])) if products else 0,
+        "source": "ocs_api",
         "request": {
             "category": category,
             "city": shipment_city,
@@ -267,7 +190,7 @@ def search_products():
     """Поиск товаров"""
     search_term = request.args.get('q', '')
     shipment_city = request.args.get('shipment_city', 'Красноярск')
-    limit = request.args.get('limit', 100)
+    limit = request.args.get('limit', 50)
     
     logger.info(f"🔧 Searching products: q={search_term}, city={shipment_city}")
     
@@ -284,24 +207,12 @@ def search_products():
         limit=limit
     )
     
-    # Fallback на тестовые данные
-    if not products or not products.get('result'):
-        logger.info("🔄 Using test products for search")
-        products = {
-            "result": [
-                product for product in TEST_PRODUCTS["result"]
-                if search_term.lower() in product["product"]["itemName"].lower()
-            ]
-        }
-        if not products["result"]:
-            products["result"] = TEST_PRODUCTS["result"]
-    
     return jsonify({
-        "success": True,
+        "success": True if products else False,
         "data": products,
         "search_term": search_term,
-        "total_count": len(products.get('result', [])),
-        "source": "ocs_api" if products and products.get('result') and products != TEST_PRODUCTS else "test_data"
+        "total_count": len(products.get('result', [])) if products else 0,
+        "source": "ocs_api"
     })
 
 @app.route('/api/debug/status')
