@@ -20,7 +20,7 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
 
-@app.route('/api/<path:path>', methods=['OPTIONS'])
+@app.route('/api/v2/v2/<path:path>', methods=['OPTIONS'])
 def options_handler(path):
     return '', 200
 
@@ -279,11 +279,11 @@ def home():
         "cors_enabled": True
     })
 
-@app.route('/api/health')
+@app.route('/api/v2/health')
 def health_check():
     return jsonify({"status": "healthy"})
 
-@app.route('/api/test')
+@app.route('/api/v2/test')
 def test_api():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -299,7 +299,7 @@ def test_api():
     })
 
 # Catalog endpoints
-@app.route('/api/catalog/categories')
+@app.route('/api/v2/catalog/categories')
 def get_categories():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -312,7 +312,7 @@ def get_categories():
         "source": "ocs_api"
     })
 
-@app.route('/api/logistic/shipment/cities')
+@app.route('/api/v2/logistic/shipment/cities')
 def get_cities():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -324,7 +324,7 @@ def get_cities():
         "data": cities or []
     })
 
-@app.route('/api/catalog/categories/<path:category>/products')
+@app.route('/api/v2/catalog/categories/<path:category>/products')
 def get_products_by_category(category):
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -347,7 +347,7 @@ def get_products_by_category(category):
         "source": "ocs_api"
     })
 
-@app.route('/api/catalog/categories/all/products')
+@app.route('/api/v2/catalog/categories/all/products')
 def search_products():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -372,7 +372,7 @@ def search_products():
         "source": "ocs_api"
     })
 
-@app.route('/api/catalog/products/<item_ids>')
+@app.route('/api/v2/catalog/products/<item_ids>')
 def get_products_by_ids(item_ids):
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -391,7 +391,7 @@ def get_products_by_ids(item_ids):
         "source": "ocs_api"
     })
 
-@app.route('/api/catalog/products/batch', methods=['POST'])
+@app.route('/api/v2/catalog/products/batch', methods=['POST'])
 def get_products_batch():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -414,7 +414,7 @@ def get_products_batch():
         "source": "ocs_api"
     })
 
-@app.route('/api/catalog/products/<item_ids>/certificates')
+@app.route('/api/v2/catalog/products/<item_ids>/certificates')
 def get_certificates(item_ids):
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -432,7 +432,7 @@ def get_certificates(item_ids):
         "source": "ocs_api"
     })
 
-@app.route('/api/catalog/products/batch/certificates', methods=['POST'])
+@app.route('/api/v2/catalog/products/batch/certificates', methods=['POST'])
 def get_certificates_batch():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -454,7 +454,7 @@ def get_certificates_batch():
         "source": "ocs_api"
     })
 
-@app.route('/api/logistic/stocks/locations')
+@app.route('/api/v2/logistic/stocks/locations')
 def get_stock_locations():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -470,7 +470,7 @@ def get_stock_locations():
     })
 
 # Content endpoints
-@app.route('/api/content/<item_ids>')
+@app.route('/api/v2/content/<item_ids>')
 def get_content(item_ids):
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -483,7 +483,7 @@ def get_content(item_ids):
         "source": "ocs_api"
     })
 
-@app.route('/api/content/batch', methods=['POST'])
+@app.route('/api/v2/content/batch', methods=['POST'])
 def get_content_batch():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -500,7 +500,7 @@ def get_content_batch():
         "source": "ocs_api"
     })
 
-@app.route('/api/content/changes')
+@app.route('/api/v2/content/changes')
 def get_content_changes():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -518,7 +518,7 @@ def get_content_changes():
     })
 
 # Orders endpoints
-@app.route('/api/orders')
+@app.route('/api/v2/orders')
 def get_orders():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -539,7 +539,7 @@ def get_orders():
         "source": "ocs_api"
     })
 
-@app.route('/api/orders/<order_id>')
+@app.route('/api/v2/orders/<order_id>')
 def get_order(order_id):
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -552,7 +552,7 @@ def get_order(order_id):
         "source": "ocs_api"
     })
 
-@app.route('/api/orders', methods=['POST'])
+@app.route('/api/v2/orders', methods=['POST'])
 def create_order():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -571,7 +571,7 @@ def create_order():
         "source": "ocs_api"
     })
 
-@app.route('/api/orders/<order_id>', methods=['PUT'])
+@app.route('/api/v2/orders/<order_id>', methods=['PUT'])
 def update_order(order_id):
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -590,7 +590,7 @@ def update_order(order_id):
         "source": "ocs_api"
     })
 
-@app.route('/api/orders/<order_id>', methods=['DELETE'])
+@app.route('/api/v2/orders/<order_id>', methods=['DELETE'])
 def delete_order(order_id):
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -605,7 +605,7 @@ def delete_order(order_id):
         "source": "ocs_api"
     })
 
-@app.route('/api/orders/<order_id>/sync', methods=['PUT'])
+@app.route('/api/v2/orders/<order_id>/sync', methods=['PUT'])
 def sync_order(order_id):
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -624,7 +624,7 @@ def sync_order(order_id):
         "source": "ocs_api"
     })
 
-@app.route('/api/orders/lines/transfer-to-manager', methods=['POST'])
+@app.route('/api/v2/orders/lines/transfer-to-manager', methods=['POST'])
 def transfer_lines_to_manager():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -643,7 +643,7 @@ def transfer_lines_to_manager():
         "source": "ocs_api"
     })
 
-@app.route('/api/orders/operations/<operation_id>')
+@app.route('/api/v2/orders/operations/<operation_id>')
 def get_operation_status(operation_id):
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -657,7 +657,7 @@ def get_operation_status(operation_id):
     })
 
 # Account endpoints
-@app.route('/api/account/payers')
+@app.route('/api/v2/account/payers')
 def get_payers():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -670,7 +670,7 @@ def get_payers():
         "source": "ocs_api"
     })
 
-@app.route('/api/account/contactpersons')
+@app.route('/api/v2/account/contactpersons')
 def get_contact_persons():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -683,7 +683,7 @@ def get_contact_persons():
         "source": "ocs_api"
     })
 
-@app.route('/api/account/currencies/exchanges')
+@app.route('/api/v2/account/currencies/exchanges')
 def get_currencies_exchange():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -696,7 +696,7 @@ def get_currencies_exchange():
         "source": "ocs_api"
     })
 
-@app.route('/api/account/finances')
+@app.route('/api/v2/account/finances')
 def get_finances():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -709,7 +709,7 @@ def get_finances():
         "source": "ocs_api"
     })
 
-@app.route('/api/account/consignees')
+@app.route('/api/v2/account/consignees')
 def get_consignees():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -723,7 +723,7 @@ def get_consignees():
     })
 
 # Logistic endpoints
-@app.route('/api/logistic/stocks/reserveplaces')
+@app.route('/api/v2/logistic/stocks/reserveplaces')
 def get_reserve_places():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -736,7 +736,7 @@ def get_reserve_places():
         "source": "ocs_api"
     })
 
-@app.route('/api/logistic/shipment/pickup-points')
+@app.route('/api/v2/logistic/shipment/pickup-points')
 def get_pickup_points():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -751,7 +751,7 @@ def get_pickup_points():
         "source": "ocs_api"
     })
 
-@app.route('/api/logistic/shipment/delivery-addresses')
+@app.route('/api/v2/logistic/shipment/delivery-addresses')
 def get_delivery_addresses():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -766,7 +766,7 @@ def get_delivery_addresses():
         "source": "ocs_api"
     })
 
-@app.route('/api/logistic/shipment/terminal-tc/transport-companies')
+@app.route('/api/v2/logistic/shipment/terminal-tc/transport-companies')
 def get_transport_companies():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -781,7 +781,7 @@ def get_transport_companies():
         "source": "ocs_api"
     })
 
-@app.route('/api/logistic/shipment/terminal-tc/addresses')
+@app.route('/api/v2/logistic/shipment/terminal-tc/addresses')
 def get_terminal_addresses():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -797,7 +797,7 @@ def get_terminal_addresses():
     })
 
 # Shipments endpoints
-@app.route('/api/shipments/stock', methods=['POST'])
+@app.route('/api/v2/shipments/stock', methods=['POST'])
 def create_shipment_stock():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -814,7 +814,7 @@ def create_shipment_stock():
         "source": "ocs_api"
     })
 
-@app.route('/api/shipments/pickup-point', methods=['POST'])
+@app.route('/api/v2/shipments/pickup-point', methods=['POST'])
 def create_shipment_pickup_point():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -831,7 +831,7 @@ def create_shipment_pickup_point():
         "source": "ocs_api"
     })
 
-@app.route('/api/shipments/direct', methods=['POST'])
+@app.route('/api/v2/shipments/direct', methods=['POST'])
 def create_shipment_direct():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -848,7 +848,7 @@ def create_shipment_direct():
         "source": "ocs_api"
     })
 
-@app.route('/api/shipments/terminal-tc', methods=['POST'])
+@app.route('/api/v2/shipments/terminal-tc', methods=['POST'])
 def create_shipment_terminal_tc():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -865,7 +865,7 @@ def create_shipment_terminal_tc():
         "source": "ocs_api"
     })
 
-@app.route('/api/shipments/<shipment_id>')
+@app.route('/api/v2/shipments/<shipment_id>')
 def get_shipment(shipment_id):
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -878,7 +878,7 @@ def get_shipment(shipment_id):
         "source": "ocs_api"
     })
 
-@app.route('/api/shipments/<shipment_id>/serial-numbers')
+@app.route('/api/v2/shipments/<shipment_id>/serial-numbers')
 def get_shipment_serial_numbers(shipment_id):
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -891,7 +891,7 @@ def get_shipment_serial_numbers(shipment_id):
         "source": "ocs_api"
     })
 
-@app.route('/api/shipments/stock/dates', methods=['POST'])
+@app.route('/api/v2/shipments/stock/dates', methods=['POST'])
 def get_stock_dates():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -908,7 +908,7 @@ def get_stock_dates():
         "source": "ocs_api"
     })
 
-@app.route('/api/shipments/pickup-point/dates', methods=['POST'])
+@app.route('/api/v2/shipments/pickup-point/dates', methods=['POST'])
 def get_pickup_point_dates():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -925,7 +925,7 @@ def get_pickup_point_dates():
         "source": "ocs_api"
     })
 
-@app.route('/api/shipments/direct/dates', methods=['POST'])
+@app.route('/api/v2/shipments/direct/dates', methods=['POST'])
 def get_direct_dates():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -942,7 +942,7 @@ def get_direct_dates():
         "source": "ocs_api"
     })
 
-@app.route('/api/shipments/direct/cost', methods=['POST'])
+@app.route('/api/v2/shipments/direct/cost', methods=['POST'])
 def get_direct_cost():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -959,7 +959,7 @@ def get_direct_cost():
         "source": "ocs_api"
     })
 
-@app.route('/api/shipments/terminal-tc/dates', methods=['POST'])
+@app.route('/api/v2/shipments/terminal-tc/dates', methods=['POST'])
 def get_terminal_tc_dates():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -976,7 +976,7 @@ def get_terminal_tc_dates():
         "source": "ocs_api"
     })
 
-@app.route('/api/shipments/terminal-tc/cost', methods=['POST'])
+@app.route('/api/v2/shipments/terminal-tc/cost', methods=['POST'])
 def get_terminal_tc_cost():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -994,7 +994,7 @@ def get_terminal_tc_cost():
     })
 
 # Invoices endpoints
-@app.route('/api/invoices')
+@app.route('/api/v2/invoices')
 def get_invoices():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
@@ -1011,7 +1011,7 @@ def get_invoices():
     })
 
 # Reports endpoints
-@app.route('/api/reports/orders')
+@app.route('/api/v2/reports/orders')
 def get_orders_report():
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
