@@ -44,7 +44,7 @@ class OCSAPI:
             logger.info(f"OCS API: {url}")
             
             # Увеличиваем таймаут
-            timeout_config = (15, 30)  # (connect timeout, read timeout)
+            timeout_config = (5, 15)  # (connect timeout, read timeout)
             
             if method == 'GET':
                 response = self.session.get(url, params=params, timeout=timeout_config, verify=True)
