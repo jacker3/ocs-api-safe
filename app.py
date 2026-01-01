@@ -1,6 +1,4 @@
-i
-
-mport os
+import os
 import requests
 import logging
 from flask import Flask, jsonify, request, make_response
