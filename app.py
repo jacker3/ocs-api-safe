@@ -1,7 +1,9 @@
-import os
+i
+
+mport os
 import requests
 import logging
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, make_response
 from flask_cors import CORS
 from dotenv import load_dotenv
 
@@ -18,11 +20,14 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
     response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-API-Key')
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    response.headers.add('Content-Type', 'application/json')
     return response
 
-@app.route('/api/v2/v2/<path:path>', methods=['OPTIONS'])
+@app.route('/api/v2/<path:path>', methods=['OPTIONS'])
 def options_handler(path):
-    return '', 200
+    response = make_response('', 200)
+    response.headers.add('Content-Type', 'application/json')
+    return response
 
 class OCSAPI:
     def __init__(self, api_key: str):
@@ -271,58 +276,87 @@ ocs_api = OCSAPI(api_key=api_key) if api_key else None
 
 @app.route('/')
 def home():
-    return jsonify({
+    response = jsonify({
         "status": "success", 
-        "message": "OCS B2B API Proxy Service",
-        "version": "1.0.0",
+        "message": "OCS B2B API Proxy Service v2",
+        "version": "2.0.0",
         "api_key_configured": bool(api_key),
-        "cors_enabled": True
+        "cors_enabled": True,
+        "base_path": "/api/v2/",
+        "endpoints": [
+            "/api/v2/health",
+            "/api/v2/test",
+            "/api/v2/catalog/categories",
+            "/api/v2/logistic/shipment/cities",
+            "/api/v2/catalog/categories/{category}/products",
+            "/api/v2/orders",
+            "/api/v2/account/payers"
+        ]
     })
+    response.headers.add('Content-Type', 'application/json')
+    return response
 
 @app.route('/api/v2/health')
 def health_check():
-    return jsonify({"status": "healthy"})
+    response = jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat()
+    })
+    response.headers.add('Content-Type', 'application/json')
+    return response
 
 @app.route('/api/v2/test')
 def test_api():
     if not ocs_api:
-        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
+        response = jsonify({"success": False, "error": "API ключ не настроен"})
+        response.headers.add('Content-Type', 'application/json')
+        return response, 500
     
     cities = ocs_api.get_shipment_cities()
     
-    return jsonify({
+    response = jsonify({
         "success": True,
         "message": "API работает",
         "api_key_configured": True,
         "ocs_api_connection": "success" if cities else "failed",
         "available_cities": cities or []
     })
+    response.headers.add('Content-Type', 'application/json')
+    return response
 
 # Catalog endpoints
 @app.route('/api/v2/catalog/categories')
 def get_categories():
     if not ocs_api:
-        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
+        response = jsonify({"success": False, "error": "API ключ не настроен"})
+        response.headers.add('Content-Type', 'application/json')
+        return response, 500
     
     categories = ocs_api.get_categories()
     
-    return jsonify({
+    response = jsonify({
         "success": True,
         "data": categories or [],
         "source": "ocs_api"
     })
+    response.headers.add('Content-Type', 'application/json')
+    return response
 
 @app.route('/api/v2/logistic/shipment/cities')
 def get_cities():
     if not ocs_api:
-        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
+        response = jsonify({"success": False, "error": "API ключ не настроен"})
+        response.headers.add('Content-Type', 'application/json')
+        return response, 500
     
     cities = ocs_api.get_shipment_cities()
     
-    return jsonify({
+    response = jsonify({
         "success": True,
         "data": cities or []
     })
+    response.headers.add('Content-Type', 'application/json')
+    return response
 
 @app.route('/api/v2/catalog/categories/<path:category>/products')
 def get_products_by_category(category):
