@@ -39,37 +39,37 @@ class OCSAPI:
         })
     
     def _make_request(self, endpoint: str, params=None, method='GET', data=None):
-    try:
-        url = f"{self.base_url}/{endpoint}"
-        logger.info(f"OCS API: {url}")
-        
-        # Увеличиваем таймаут
-        timeout_config = (15, 30)  # (connect timeout, read timeout)
-        
-        if method == 'GET':
-            response = self.session.get(url, params=params, timeout=timeout_config, verify=True)
-        elif method == 'POST':
-            response = self.session.post(url, params=params, json=data, timeout=timeout_config, verify=True)
-        elif method == 'PUT':
-            response = self.session.put(url, params=params, json=data, timeout=timeout_config, verify=True)
-        elif method == 'DELETE':
-            response = self.session.delete(url, params=params, timeout=timeout_config, verify=True)
-        else:
-            logger.error(f"Unsupported method: {method}")
-            return None
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            logger.error(f"OCS API Error {response.status_code}: {response.text}")
-            return None
+        try:
+            url = f"{self.base_url}/{endpoint}"
+            logger.info(f"OCS API: {url}")
             
-    except requests.exceptions.Timeout:
-        logger.error(f"OCS API Timeout: {url}")
-        return {"error": "Timeout connecting to OCS API"}
-    except Exception as e:
-        logger.error(f"OCS API Exception: {e}")
-        return {"error": str(e)}
+            # Увеличиваем таймаут
+            timeout_config = (15, 30)  # (connect timeout, read timeout)
+            
+            if method == 'GET':
+                response = self.session.get(url, params=params, timeout=timeout_config, verify=True)
+            elif method == 'POST':
+                response = self.session.post(url, params=params, json=data, timeout=timeout_config, verify=True)
+            elif method == 'PUT':
+                response = self.session.put(url, params=params, json=data, timeout=timeout_config, verify=True)
+            elif method == 'DELETE':
+                response = self.session.delete(url, params=params, timeout=timeout_config, verify=True)
+            else:
+                logger.error(f"Unsupported method: {method}")
+                return None
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"OCS API Error {response.status_code}: {response.text}")
+                return None
+                
+        except requests.exceptions.Timeout:
+            logger.error(f"OCS API Timeout: {url}")
+            return {"error": "Timeout connecting to OCS API"}
+        except Exception as e:
+            logger.error(f"OCS API Exception: {e}")
+            return {"error": str(e)}
 
     # Catalog endpoints
     def get_categories(self):
