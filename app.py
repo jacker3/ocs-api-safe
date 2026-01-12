@@ -81,7 +81,7 @@ class OCSAPI:
             logger.info(f"OCS API: {url}")
             
             # Оптимизированные таймауты
-            timeout_config = (70, 120)  # 70 секунд на соединение, 120 на чтение
+            timeout_config = (360, 360)  # 70 секунд на соединение, 120 на чтение
             
             start_time = time.time()
             
