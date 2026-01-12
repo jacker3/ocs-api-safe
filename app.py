@@ -129,15 +129,15 @@ class OCSAPI:
         """Получение городов с кэшированием"""
         return self._make_request("logistic/shipment/cities")
     
-    def get_products_by_category(self, categories: str, shipment_city: str, **params):
+    def get_products_by_category(self, categories: str, shipmentcity: str, **params):
         endpoint = f"catalog/categories/{categories}/products"
-        params['shipmentcity'] = shipment_city
+        params['shipmentcity'] = shipmentcity
         params['limit'] = params.get('limit', 50)
         return self._make_request(endpoint, params=params)
     
-    def search_products(self, search_term: str, shipment_city: str, **params):
+    def search_products(self, search_term: str, shipmentcity: str, **params):
         endpoint = f"catalog/categories/all/products"
-        params['shipmentcity'] = shipment_city
+        params['shipmentcity'] = shipmentcity
         params['search'] = search_term
         params['limit'] = params.get('limit', 50)
         return self._make_request(endpoint, params=params)
@@ -309,7 +309,7 @@ def get_products_by_category(category):
         response.headers.add('Content-Type', 'application/json')
         return response, 500
     
-    shipment_city = request.args.get('shipment_city', 'Красноярск')
+    shipmentcity = request.args.get('shipmentcity', 'Красноярск')
     
     if category in ['undefined', 'null', '']:
         category = 'all'
@@ -317,7 +317,7 @@ def get_products_by_category(category):
     try:
         products = ocs_api.get_products_by_category(
             categories=category,
-            shipment_city=shipment_city,
+            shipmentcity=shipmentcity,
             **request.args.to_dict()
         )
         
@@ -359,7 +359,7 @@ def search_products():
         return response, 500
     
     search_term = request.args.get('q', '')
-    shipment_city = request.args.get('shipment_city', 'Красноярск')
+    shipmentcity = request.args.get('shipmentcity', 'Красноярск')
     
     if not search_term:
         response = jsonify({
@@ -373,7 +373,7 @@ def search_products():
     try:
         products = ocs_api.search_products(
             search_term=search_term,
-            shipment_city=shipment_city,
+            shipmentcity=shipmentcity,
             **request.args.to_dict()
         )
         
