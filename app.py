@@ -17,15 +17,22 @@ class OCSClient:
             'accept': 'application/json',
             'X-API-Key': API_KEY,
         })
+        # Увеличиваем таймауты для сессии
+        self.timeout = (60, 300)  # 60 сек на соединение, 300 на чтение (5 минут)
     
     def get_categories(self):
-        """Получение категорий без ограничений"""
+        """Получение категорий с увеличенными таймаутами"""
         url = f'{BASE_URL}/catalog/categories'
         try:
-            response = self.session.get(url)
+            response = self.session.get(url, timeout=self.timeout)
+            response.raise_for_status()  # Проверяем статус ответа
             return response.json()
+        except requests.exceptions.Timeout:
+            return {'error': 'Request timeout - OCS API is too slow'}
+        except requests.exceptions.RequestException as e:
+            return {'error': f'Request failed: {str(e)}'}
         except Exception as e:
-            return {'error': str(e)}
+            return {'error': f'Unexpected error: {str(e)}'}
 
 # Инициализация клиента
 client = OCSClient() if API_KEY else None
@@ -35,7 +42,8 @@ def home():
     return jsonify({
         'service': 'OCS Categories API',
         'endpoints': ['/categories'],
-        'api_key_configured': bool(API_KEY)
+        'api_key_configured': bool(API_KEY),
+        'note': 'Categories endpoint may take several minutes to load'
     })
 
 @app.route('/categories')
@@ -50,6 +58,12 @@ def get_categories():
     
     return jsonify(result)
 
+@app.route('/health')
+def health():
+    """Простая проверка здоровья"""
+    return jsonify({'status': 'ok', 'api_configured': bool(API_KEY)})
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    # Запуск с увеличенными настройками
+    app.run(host='0.0.0.0', port=port, threaded=True)
