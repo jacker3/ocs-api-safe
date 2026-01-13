@@ -81,7 +81,7 @@ class OCSAPI:
             logger.info(f"OCS API: {url}")
             
             # Оптимизированные таймауты
-            timeout_config = (360, 360)  # 70 секунд на соединение, 120 на чтение
+            timeout_config = (70, 120)  # 70 секунд на соединение, 120 на чтение
             
             start_time = time.time()
             
@@ -130,68 +130,69 @@ class OCSAPI:
         return self._make_request("logistic/shipment/cities")
     
     def get_products_paginated(self, endpoint_builder, initial_params, max_items=1000):
-    """
-    Универсальный метод для постраничной загрузки товаров.
+        """
+        Универсальный метод для постраничной загрузки товаров.
+        
+        Args:
+            endpoint_builder: функция, которая принимает параметры и возвращает endpoint
+            initial_params: начальные параметры запроса
+            max_items: максимальное количество товаров для загрузки
+        
+        Returns:
+            list: объединенный список всех товаров
+        """
+        all_products = []
+        offset = 0
+        limit = initial_params.get('limit', 50)
+        
+        while len(all_products) < max_items:
+            # Создаем копию параметров для текущей страницы
+            current_params = initial_params.copy()
+            current_params['offset'] = offset
+            current_params['limit'] = limit
+            
+            # Получаем текущую страницу
+            response = self._make_request(
+                endpoint_builder(current_params),
+                params=current_params
+            )
+            
+            if not response or "error" in response:
+                logger.error(f"Ошибка при пагинации: {response.get('error')}")
+                break
+            
+            # Извлекаем товары из ответа (структура может отличаться)
+            products = response.get('result', [])
+            if not products:
+                break
+            
+            all_products.extend(products)
+            
+            # Если получено меньше товаров, чем запрошено, значит это последняя страница
+            if len(products) < limit:
+                break
+            
+            # Увеличиваем смещение для следующей страницы
+            offset += limit
+            
+            # Небольшая задержка, чтобы не превысить лимиты API
+            time.sleep(0.1)
+        
+        return all_products
     
-    Args:
-        endpoint_builder: функция, которая принимает параметры и возвращает endpoint
-        initial_params: начальные параметры запроса
-        max_items: максимальное количество товаров для загрузки
-    
-    Returns:
-        list: объединенный список всех товаров
-    """
-    all_products = []
-    offset = 0
-    limit = initial_params.get('limit', 50)
-    
-    while len(all_products) < max_items:
-        # Создаем копию параметров для текущей страницы
-        current_params = initial_params.copy()
-        current_params['offset'] = offset
-        current_params['limit'] = limit
-        
-        # Получаем текущую страницу
-        response = self._make_request(
-            endpoint_builder(current_params),
-            params=current_params
-        )
-        
-        if not response or "error" in response:
-            logger.error(f"Ошибка при пагинации: {response.get('error')}")
-            break
-        
-        # Извлекаем товары из ответа (структура может отличаться)
-        products = response.get('result', [])
-        if not products:
-            break
-        
-        all_products.extend(products)
-        
-        # Если получено меньше товаров, чем запрошено, значит это последняя страница
-        if len(products) < limit:
-            break
-        
-        # Увеличиваем смещение для следующей страницы
-        offset += limit
-        
-        # Небольшая задержка, чтобы не превысить лимиты API
-        time.sleep(0.1)
-    
-    return all_products
     def get_products_by_category(self, categories: str, shipment_city: str, **params):
         endpoint = f"catalog/categories/{categories}/products"
         params['shipmentcity'] = shipment_city
-        # Добавляем пагинацию, если не передана
-        params['limit'] = params.get('limit', 50)
+        # ВНИМАНИЕ: проверьте документацию OCS API, поддерживает ли она пагинацию
+        # params['limit'] = params.get('limit', 50)  # Раскомментируйте если API поддерживает
         return self._make_request(endpoint, params=params)
     
     def search_products(self, search_term: str, shipment_city: str, **params):
         endpoint = f"catalog/categories/all/products"
         params['shipmentcity'] = shipment_city
         params['search'] = search_term
-        # Добавляем пагинацию, если не передана
-        params['limit'] = params.get('limit', 50)  # Начните с 50
+        # ВНИМАНИЕ: проверьте документацию OCS API, поддерживает ли она пагинацию
+        # params['limit'] = params.get('limit', 50)  # Раскомментируйте если API поддерживает
         return self._make_request(endpoint, params=params)
 
 # Инициализация API
