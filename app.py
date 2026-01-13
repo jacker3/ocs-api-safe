@@ -2,16 +2,22 @@ import os
 import requests
 import logging
 import time
+import json
+import threading
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, make_response
 from flask_cors import CORS
 from dotenv import load_dotenv
 import functools
-import json
+import queue
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -55,14 +61,11 @@ def after_request(response):
 
 @app.route('/api/v2/<path:path>', methods=['OPTIONS'])
 def options_handler(path):
-    response = make_response('', 200)
-    response.headers.add('Content-Type', 'application/json')
-    return response
+    return make_response('', 200)
 
 class OCSAPI:
     def __init__(self, api_key: str):
         self.api_key = api_key
-        # Используем тестовую среду для разработки
         self.base_url = os.getenv('OCS_API_URL', 'https://connector.b2b.ocs.ru/api/v2')
         self.session = requests.Session()
         self.session.headers.update({
@@ -70,35 +73,38 @@ class OCSAPI:
             'X-API-Key': self.api_key,
             'User-Agent': 'OCS-Integration/1.0'
         })
-        # Настройки сессии с увеличенными таймаутами
+        
+        # Увеличиваем таймауты сессии
         self.session.mount('https://', requests.adapters.HTTPAdapter(
-            max_retries=2,
-            pool_connections=20,
-            pool_maxsize=20,
-            pool_block=True
+            max_retries=3,
+            pool_connections=10,
+            pool_maxsize=10
         ))
+        
+        logger.info(f"OCS API initialized with URL: {self.base_url}")
     
-    def _make_request(self, endpoint: str, params=None, method='GET', data=None, timeout=None):
-        """Базовый метод для выполнения запросов к OCS API"""
+    def _make_request(self, endpoint: str, params=None, method='GET', data=None, custom_timeout=None):
+        """Базовый метод для выполнения запросов к OCS API с логированием"""
         try:
             url = f"{self.base_url}/{endpoint}"
-            logger.info(f"OCS API: {method} {url}")
+            logger.info(f"OCS API Request: {method} {url}")
             
-            if params:
-                logger.debug(f"Params: {params}")
-            if data and method in ['POST', 'PUT']:
-                logger.debug(f"Data size: {len(json.dumps(data) if data else 0)} bytes")
-            
-            # Увеличенные таймауты для медленных запросов OCS
-            if timeout is None:
-                # Категории могут быть очень большими, нужен большой таймаут
-                if 'catalog/categories' in endpoint:
-                    timeout = (60, 300)  # 60 сек на соединение, 300 на чтение
-                else:
-                    timeout = (30, 120)  # 30 сек на соединение, 120 на чтение
+            # Настройка таймаутов в зависимости от типа запроса
+            if custom_timeout:
+                timeout = custom_timeout
+            elif 'catalog/categories' in endpoint:
+                # Для категорий - самый большой таймаут
+                timeout = (120, 300)  # 120 сек на соединение, 300 на чтение
+            elif 'catalog' in endpoint:
+                # Для каталога товаров
+                timeout = (60, 180)  # 60 сек на соединение, 180 на чтение
+            else:
+                # Для остальных запросов
+                timeout = (30, 120)  # 30 сек на соединение, 120 на чтение
             
             start_time = time.time()
             
+            # Выполняем запрос
             if method == 'GET':
                 response = self.session.get(url, params=params, timeout=timeout, verify=True)
             elif method == 'POST':
@@ -107,380 +113,72 @@ class OCSAPI:
                 response = self.session.put(url, params=params, json=data, timeout=timeout, verify=True)
             elif method == 'DELETE':
                 response = self.session.delete(url, params=params, timeout=timeout, verify=True)
-            elif method == 'HEAD':
-                response = self.session.head(url, params=params, timeout=timeout, verify=True)
             else:
                 logger.error(f"Unsupported method: {method}")
-                return None
+                return {"error": f"Unsupported method: {method}", "code": 400}
             
             elapsed = time.time() - start_time
-            logger.info(f"OCS API response time: {elapsed:.2f}s, Status: {response.status_code}, Size: {len(response.content) if response.content else 0} bytes")
+            logger.info(f"OCS API Response: {method} {url} - Status: {response.status_code}, Time: {elapsed:.2f}s")
             
+            # Обработка ответа
             if response.status_code == 200:
-                if method == 'HEAD':
-                    return {"success": True, "headers": dict(response.headers)}
                 try:
                     return response.json()
                 except json.JSONDecodeError as e:
-                    logger.error(f"JSON decode error: {e}, Response: {response.text[:200]}")
-                    return {"error": "Invalid JSON response", "code": 500}
-            elif response.status_code == 204:
-                return {"success": True}
+                    logger.error(f"JSON decode error: {e}")
+                    return {"error": "Invalid JSON response", "text": response.text[:200], "code": 500}
             elif response.status_code == 429:
-                logger.error("Превышен лимит запросов (429)")
+                logger.warning("Rate limit exceeded")
                 return {"error": "Rate limit exceeded", "code": 429}
-            elif response.status_code == 401:
-                logger.error("Неавторизованный запрос (401)")
-                return {"error": "Unauthorized", "code": 401}
-            elif response.status_code == 403:
-                logger.error("Доступ запрещен (403)")
-                return {"error": "Forbidden", "code": 403}
-            elif response.status_code == 404:
-                logger.error("Не найдено (404)")
-                return {"error": "Not found", "code": 404}
+            elif response.status_code >= 400:
+                error_msg = f"HTTP error {response.status_code}"
+                logger.error(f"{error_msg}: {response.text[:200]}")
+                return {"error": error_msg, "code": response.status_code}
             else:
-                logger.error(f"OCS API Error {response.status_code}: {response.text[:200]}")
-                return {"error": f"OCS API returned {response.status_code}", "code": response.status_code}
+                return {"error": f"Unexpected status code: {response.status_code}", "code": response.status_code}
                 
         except requests.exceptions.Timeout:
-            logger.error(f"OCS API Timeout: {url}")
-            return {"error": "Timeout connecting to OCS API", "code": 408}
+            logger.error(f"Timeout for {method} {endpoint}")
+            return {"error": "Request timeout", "code": 408}
         except requests.exceptions.ConnectionError as e:
-            logger.error(f"OCS API Connection Error: {url} - {str(e)}")
+            logger.error(f"Connection error: {str(e)}")
             return {"error": f"Connection error: {str(e)}", "code": 503}
-        except requests.exceptions.RequestException as e:
-            logger.error(f"OCS API Request Exception: {url} - {str(e)}")
-            return {"error": f"Request exception: {str(e)}", "code": 500}
         except Exception as e:
-            logger.error(f"OCS API Exception: {e}")
+            logger.error(f"Unexpected error: {str(e)}")
             return {"error": str(e), "code": 500}
 
-    # ===== КАТАЛОГ (Catalog) =====
+    # ===== ОСНОВНЫЕ МЕТОДЫ =====
     
-    @cache_response(ttl_seconds=3600)  # 1 час для категорий
+    @cache_response(ttl_seconds=1800)  # 30 минут
     def get_categories(self):
-        """2.2.1 Получение информации о товарных категориях"""
-        # Для категорий используем специальный увеличенный таймаут
-        return self._make_request("catalog/categories", timeout=(60, 300))
+        """Получение категорий товаров"""
+        return self._make_request("catalog/categories")
     
-    def get_products_by_category(self, categories: str, shipment_city: str, **params):
-        """2.2.2 Получение информации о состоянии склада и ценах по товарным категориям"""
-        endpoint = f"catalog/categories/{categories}/products"
-        params = params.copy() if params else {}
-        params['shipmentcity'] = shipment_city
-        
-        # Установка значений по умолчанию согласно документации
-        default_params = {
-            'onlyavailable': 'false',
-            'includeregular': 'true',
-            'includesale': 'false',
-            'includeuncondition': 'false',
-            'includeunconditionalimages': 'false',
-            'includemissing': 'false',
-            'withdescriptions': 'true'
-        }
-        
-        for key, value in default_params.items():
-            if key not in params:
-                params[key] = value
-        
-        return self._make_request(endpoint, params=params, timeout=(30, 180))
+    @cache_response(ttl_seconds=1800)  # 30 минут
+    def get_shipment_cities(self):
+        """Получение городов отгрузки"""
+        return self._make_request("logistic/shipment/cities")
     
-    def get_products_by_category_batch(self, categories_list: list, shipment_city: str, **params):
-        """2.2.3 Batch-версия для большого количества категорий"""
-        endpoint = "catalog/categories/batch/products"
-        params = params.copy() if params else {}
-        params['shipmentcity'] = shipment_city
-        
-        # Установка значений по умолчанию
-        default_params = {
-            'onlyavailable': 'false',
-            'includeregular': 'true',
-            'withdescriptions': 'true'
-        }
-        
-        for key, value in default_params.items():
-            if key not in params:
-                params[key] = value
-        
-        data = categories_list
-        return self._make_request(endpoint, params=params, method='POST', data=data, timeout=(30, 180))
+    def get_products_by_category(self, category: str, shipment_city: str, **params):
+        """Получение товаров по категории"""
+        endpoint = f"catalog/categories/{category}/products"
+        all_params = {'shipmentcity': shipment_city}
+        all_params.update(params)
+        return self._make_request(endpoint, params=all_params)
     
     def get_products_by_ids(self, item_ids: str, shipment_city: str, **params):
-        """2.2.4 Получение информации по списку товаров"""
+        """Получение товаров по ID"""
         endpoint = f"catalog/products/{item_ids}"
-        params = params.copy() if params else {}
-        params['shipmentcity'] = shipment_city
-        return self._make_request(endpoint, params=params, timeout=(30, 120))
+        all_params = {'shipmentcity': shipment_city}
+        all_params.update(params)
+        return self._make_request(endpoint, params=all_params)
     
     def get_products_by_ids_batch(self, item_ids_list: list, shipment_city: str, **params):
-        """2.2.5 Batch-версия для большого количества товаров"""
+        """Batch-запрос товаров"""
         endpoint = "catalog/products/batch"
-        params = params.copy() if params else {}
-        params['shipmentcity'] = shipment_city
-        data = item_ids_list
-        return self._make_request(endpoint, params=params, method='POST', data=data, timeout=(30, 180))
-    
-    def get_certificates(self, item_ids: str, actuality: str = "actual"):
-        """2.2.6 Получение информации о сертификатах"""
-        endpoint = f"catalog/products/{item_ids}/certificates"
-        params = {'actuality': actuality}
-        return self._make_request(endpoint, params=params, timeout=(30, 120))
-    
-    def get_certificates_batch(self, item_ids_list: list, actuality: str = "actual"):
-        """2.2.7 Batch-версия сертификатов"""
-        endpoint = "catalog/products/batch/certificates"
-        params = {'actuality': actuality}
-        data = item_ids_list
-        return self._make_request(endpoint, params=params, method='POST', data=data, timeout=(30, 180))
-    
-    # ===== СПРАВОЧНАЯ ИНФОРМАЦИЯ =====
-    
-    @cache_response(ttl_seconds=3600)
-    def get_shipment_cities(self):
-        """2.3.1 Получение информации о допустимых городах отгрузки"""
-        return self._make_request("logistic/shipment/cities", timeout=(30, 120))
-    
-    def get_stock_locations(self, shipment_city: str):
-        """2.3.2 Получение информации о допустимых местоположениях товара"""
-        endpoint = "logistic/stocks/locations"
-        params = {'shipmentcity': shipment_city}
-        return self._make_request(endpoint, params=params, timeout=(30, 120))
-    
-    # ===== КОНТЕНТ (Content) =====
-    
-    def get_content(self, item_ids: str):
-        """3.2.1 Получение характеристик товара"""
-        endpoint = f"content/{item_ids}"
-        return self._make_request(endpoint)
-    
-    def get_content_batch(self, item_ids_list: list):
-        """3.2.2 Batch-версия характеристик товара"""
-        endpoint = "content/batch"
-        data = item_ids_list
-        return self._make_request(endpoint, method='POST', data=data)
-    
-    def get_content_changes(self, from_date: str):
-        """3.2.3 Получение списка товаров с изменениями в контенте"""
-        endpoint = "content/changes"
-        params = {'from': from_date}
-        return self._make_request(endpoint, params=params)
-    
-    def get_image_info(self, image_type: str, file_name: str):
-        """HEAD-запрос для проверки изображений"""
-        endpoint = f"files/{image_type}/{file_name}"
-        return self._make_request(endpoint, method='HEAD')
-    
-    def get_original_image(self, file_name: str):
-        """Получение оригинального изображения"""
-        endpoint = f"files/contentimages/{file_name}"
-        return self._make_request(endpoint)
-    
-    def get_medium_image(self, file_name: str):
-        """Получение уменьшенного изображения (800x800)"""
-        endpoint = f"files/mediumimages/{file_name}"
-        return self._make_request(endpoint)
-    
-    # ===== ЗАКАЗЫ (Orders) =====
-    
-    def create_order(self, order_data: dict, async_mode: bool = True):
-        """4.2.1 Создание заказа"""
-        endpoint = "orders" if async_mode else "orders/online"
-        return self._make_request(endpoint, method='POST', data=order_data)
-    
-    def update_order(self, order_id: str, order_data: dict, async_mode: bool = True):
-        """4.2.2 Редактирование заказа"""
-        endpoint = f"orders/{order_id}" if async_mode else f"orders/online/{order_id}"
-        return self._make_request(endpoint, method='PUT', data=order_data)
-    
-    def cancel_order_reserves(self, order_id: str, async_mode: bool = True):
-        """4.2.3 Отмена резервов по заказу"""
-        endpoint = f"orders/{order_id}" if async_mode else f"orders/online/{order_id}"
-        return self._make_request(endpoint, method='DELETE')
-    
-    def get_order(self, order_id: str):
-        """4.2.4 Получение информации о заказе"""
-        endpoint = f"orders/{order_id}"
-        return self._make_request(endpoint)
-    
-    def get_orders(self, from_date: str, to_date: str, only_active: bool = True):
-        """4.2.5 Получение списка созданных заказов"""
-        endpoint = "orders"
-        params = {
-            'From': from_date,
-            'To': to_date,
-            'OnlyActive': 'true' if only_active else 'false'
-        }
-        return self._make_request(endpoint, params=params)
-    
-    def transfer_lines_to_manager(self, transfer_data: dict, async_mode: bool = True):
-        """4.2.6 Передача строк заказов под управление менеджеру"""
-        endpoint = "orders/lines/transfer-to-manager" if async_mode else "orders/online/lines/transfer-to-manager"
-        return self._make_request(endpoint, method='POST', data=transfer_data)
-    
-    def get_order_operation_status(self, operation_id: str):
-        """4.2.7 Получение информации о выполнении асинхронной операции"""
-        endpoint = f"orders/operations/{operation_id}"
-        return self._make_request(endpoint)
-    
-    def sync_order(self, order_id: str, sync_data: dict, async_mode: bool = True):
-        """4.2.8 Синхронизация заказа"""
-        endpoint = f"orders/{order_id}/sync" if async_mode else f"orders/online/{order_id}/sync"
-        return self._make_request(endpoint, method='PUT', data=sync_data)
-    
-    # ===== СПРАВОЧНАЯ ИНФОРМАЦИЯ ДЛЯ ЗАКАЗОВ =====
-    
-    def get_payers(self):
-        """4.3.1 Получение информации о плательщиках"""
-        return self._make_request("account/payers")
-    
-    def get_contact_persons(self):
-        """4.3.2 Получение информации о контактных лицах"""
-        return self._make_request("account/contactpersons")
-    
-    def get_reserve_places(self):
-        """4.3.4 Получение информации о разрешенных местах резервирования"""
-        return self._make_request("logistic/stocks/reserveplaces")
-    
-    def get_currency_exchanges(self):
-        """4.3.5 Получение курсов валют"""
-        return self._make_request("account/currencies/exchanges")
-    
-    # ===== СЧЕТА (Invoices) =====
-    
-    def get_invoices(self, from_date: str, to_date: str):
-        """5.2.1 Получение списка счетов"""
-        endpoint = "invoices"
-        params = {'From': from_date, 'To': to_date}
-        return self._make_request(endpoint, params=params)
-    
-    def export_invoice_pdf(self, invoice_id: str):
-        """5.2.2 Экспорт счета в PDF"""
-        endpoint = f"invoices/{invoice_id}.pdf"
-        return self._make_request(endpoint)
-    
-    # ===== ОТЧЕТЫ (Reports) =====
-    
-    def get_orders_report(self):
-        """6.2.1 Отчет Состояние заказов"""
-        return self._make_request("reports/orders")
-    
-    # ===== ОТГРУЗКИ (Shipments) =====
-    
-    def create_shipment_stock(self, shipment_data: dict):
-        """7.2.1 Отгрузка со склада (самовывоз)"""
-        return self._make_request("shipments/stock", method='POST', data=shipment_data)
-    
-    def create_shipment_pickup_point(self, shipment_data: dict):
-        """7.2.2 Отгрузка с доставкой до пункта выдачи"""
-        return self._make_request("shipments/pickup-point", method='POST', data=shipment_data)
-    
-    def create_shipment_direct(self, shipment_data: dict):
-        """7.2.3 Отгрузка с доставкой до адреса"""
-        return self._make_request("shipments/direct", method='POST', data=shipment_data)
-    
-    def create_shipment_terminal_tc(self, shipment_data: dict):
-        """7.2.4 Отгрузка с доставкой до терминала ТК"""
-        return self._make_request("shipments/terminal-tc", method='POST', data=shipment_data)
-    
-    def get_shipment(self, shipment_id: str):
-        """7.2.5 Получение информации по отгрузке"""
-        endpoint = f"shipments/{shipment_id}"
-        return self._make_request(endpoint)
-    
-    def get_shipment_dates_stock(self, lines_data: list):
-        """7.3.1 Получение информации по допустимому времени отгрузки с самовывозом"""
-        endpoint = "shipments/stock/dates"
-        data = {"lines": lines_data}
-        return self._make_request(endpoint, method='POST', data=data)
-    
-    def get_shipment_dates_pickup_point(self, shipment_city: str, pickup_point_id: str, lines_data: list):
-        """7.3.2 Получение информации по доступным датам доставки (до пункта выдачи)"""
-        endpoint = "shipments/pickup-point/dates"
-        data = {
-            "shipmentCity": shipment_city,
-            "pickupPoint": pickup_point_id,
-            "lines": lines_data
-        }
-        return self._make_request(endpoint, method='POST', data=data)
-    
-    def get_partner_finances(self):
-        """7.3.3 Получение информации по кредитным средствам партнёра"""
-        return self._make_request("account/finances")
-    
-    def get_consignees(self):
-        """7.3.4 Получение информации о грузополучателях"""
-        return self._make_request("account/consignees")
-    
-    def get_pickup_points(self, shipment_city: str):
-        """7.3.5 Получение информации о пунктах выдачи"""
-        endpoint = "logistic/shipment/pickup-points"
-        params = {'shipmentcity': shipment_city}
-        return self._make_request(endpoint, params=params)
-    
-    def get_delivery_cost_direct(self, lines_data: list, shipment_city: str, delivery_address: str, delivery_date: str = None):
-        """7.3.6 Получение информации о стоимости доставки до адреса"""
-        endpoint = "shipments/direct/cost"
-        data = {
-            "lines": lines_data,
-            "shipmentCity": shipment_city,
-            "deliveryAddress": delivery_address
-        }
-        if delivery_date:
-            data["deliveryDate"] = delivery_date
-        return self._make_request(endpoint, method='POST', data=data)
-    
-    def get_delivery_dates_direct(self, lines_data: list, delivery_address_id: str):
-        """7.3.7 Получение информации по доступным датам доставки (до адреса)"""
-        endpoint = "shipments/direct/dates"
-        data = {
-            "lines": lines_data,
-            "deliveryAddressId": delivery_address_id
-        }
-        return self._make_request(endpoint, method='POST', data=data)
-    
-    def get_delivery_addresses(self, shipment_city: str):
-        """7.3.8 Получение списка зарегистрированных доступных адресов доставки"""
-        endpoint = "logistic/shipment/delivery-addresses"
-        params = {'shipmentcity': shipment_city}
-        return self._make_request(endpoint, params=params)
-    
-    def get_shipment_serial_numbers(self, shipment_id: str):
-        """7.3.9 Получение серийных номеров строк отгрузки"""
-        endpoint = f"shipments/{shipment_id}/serial-numbers"
-        return self._make_request(endpoint)
-    
-    def get_transport_companies(self, shipment_city: str):
-        """7.3.10 Получение списка доступных транспортных компаний"""
-        endpoint = "logistic/shipment/terminal-tc/transport-companies"
-        params = {'shipmentcity': shipment_city}
-        return self._make_request(endpoint, params=params)
-    
-    def get_terminal_addresses(self, shipment_city: str):
-        """7.3.11 Получение списка зарегистрированных адресов доставки (до терминала ТК)"""
-        endpoint = "logistic/shipment/terminal-tc/addresses"
-        params = {'shipmentcity': shipment_city}
-        return self._make_request(endpoint, params=params)
-    
-    def get_delivery_dates_terminal_tc(self, lines_data: list, delivery_address_id: str):
-        """7.3.12 Получение информации по доступным датам доставки (до терминала ТК)"""
-        endpoint = "shipments/terminal-tc/dates"
-        data = {
-            "lines": lines_data,
-            "deliveryAddressId": delivery_address_id
-        }
-        return self._make_request(endpoint, method='POST', data=data)
-    
-    def get_delivery_cost_terminal_tc(self, lines_data: list, delivery_address_id: str, delivery_date: str = None):
-        """7.3.13 Получение информации о стоимости доставки до терминала ТК"""
-        endpoint = "shipments/terminal-tc/cost"
-        data = {
-            "lines": lines_data,
-            "deliveryAddressId": delivery_address_id
-        }
-        if delivery_date:
-            data["deliveryDate"] = delivery_date
-        return self._make_request(endpoint, method='POST', data=data)
+        all_params = {'shipmentcity': shipment_city}
+        all_params.update(params)
+        return self._make_request(endpoint, method='POST', data=item_ids_list, params=all_params)
 
 # Инициализация API
 api_key = os.getenv('OCS_API_KEY')
@@ -488,629 +186,341 @@ if not api_key:
     logger.warning("OCS_API_KEY not found in environment variables")
     ocs_api = None
 else:
-    logger.info(f"API key loaded, length: {len(api_key)}")
+    logger.info("OCS API initialized successfully")
     ocs_api = OCSAPI(api_key=api_key)
 
-# ===== АСИНХРОННАЯ ОБРАБОТКА ДЛЯ ДЛИННЫХ ЗАПРОСОВ =====
-
-import threading
-from queue import Queue
-
-# Очередь для асинхронных задач
-task_queue = Queue()
-results_cache = {}
-
-def worker():
-    """Фоновый воркер для обработки длинных запросов"""
-    while True:
-        try:
-            task_id, func, args, kwargs = task_queue.get()
-            logger.info(f"Processing task {task_id}")
-            
-            try:
-                result = func(*args, **kwargs)
-                results_cache[task_id] = {
-                    'status': 'completed',
-                    'result': result,
-                    'timestamp': datetime.now().isoformat()
-                }
-            except Exception as e:
-                results_cache[task_id] = {
-                    'status': 'error',
-                    'error': str(e),
-                    'timestamp': datetime.now().isoformat()
-                }
-            
-            task_queue.task_done()
-        except Exception as e:
-            logger.error(f"Worker error: {e}")
-
-# Запускаем воркер в фоновом потоке
-worker_thread = threading.Thread(target=worker, daemon=True)
-worker_thread.start()
-
-def submit_async_task(func, *args, **kwargs):
-    """Отправка задачи в фоновый воркер"""
-    task_id = f"task_{int(time.time())}_{id(func)}"
-    task_queue.put((task_id, func, args, kwargs))
-    return task_id
-
-# ===== FLASK ЭНДПОИНТЫ С УЛУЧШЕННОЙ ОБРАБОТКОЙ =====
+# ===== ПРОСТЫЕ И НАДЕЖНЫЕ ЭНДПОИНТЫ =====
 
 @app.route('/')
 def home():
+    """Главная страница"""
     return jsonify({
-        "status": "success", 
-        "message": "OCS B2B API Proxy Service v2",
+        "service": "OCS B2B API Proxy",
         "version": "2.0.0",
-        "api_key_configured": bool(api_key),
-        "timestamp": datetime.now().isoformat(),
-        "features": [
-            "Batch-обработка больших объемов данных",
-            "Кэширование справочной информации",
-            "Увеличенные таймауты для медленных запросов",
-            "Асинхронная обработка длинных операций"
-        ],
-        "timeout_settings": {
-            "categories": "60s connect, 300s read",
-            "products": "30s connect, 180s read",
-            "default": "30s connect, 120s read"
-        }
+        "status": "operational" if ocs_api else "no_api_key",
+        "endpoints": {
+            "health": "/api/v2/health",
+            "test": "/api/v2/test",
+            "cities": "/api/v2/logistic/shipment/cities",
+            "categories": "/api/v2/catalog/categories",
+            "products_by_category": "/api/v2/catalog/categories/{category}/products",
+            "products_by_ids": "/api/v2/catalog/products/{item_ids}"
+        },
+        "timestamp": datetime.now().isoformat()
     })
 
 @app.route('/api/v2/health')
 def health_check():
+    """Проверка здоровья сервиса"""
     return jsonify({
         "status": "healthy",
-        "service": "OCS API Proxy",
-        "cache_size": len(cache),
-        "async_queue_size": task_queue.qsize(),
+        "ocs_api_configured": bool(ocs_api),
         "timestamp": datetime.now().isoformat()
     })
 
 @app.route('/api/v2/test')
 def test_api():
+    """Тестовый запрос к OCS API"""
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
     
-    # Тестируем только быстрые эндпоинты
-    cities_result = ocs_api.get_shipment_cities()
+    # Тестируем только быстрый эндпоинт
+    result = ocs_api.get_shipment_cities()
     
-    cities_success = cities_result and "error" not in cities_result
-    
-    return jsonify({
-        "success": cities_success,
-        "api_key_configured": True,
-        "endpoints": {
-            "cities": {
-                "success": cities_success,
-                "error": cities_result.get("error") if not cities_success else None
-            }
-        },
-        "timestamp": datetime.now().isoformat(),
-        "note": "Categories endpoint is heavy and may timeout in test"
-    })
-
-# ===== КАТАЛОГ С АСИНХРОННОЙ ОБРАБОТКОЙ =====
-
-@app.route('/api/v2/catalog/categories')
-def get_categories_route():
-    if not ocs_api:
-        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
-    
-    # Проверяем, не запрашивает ли клиент асинхронный режим
-    async_mode = request.args.get('async', 'false').lower() == 'true'
-    
-    if async_mode:
-        # Асинхронный режим - возвращаем task_id сразу
-        task_id = submit_async_task(ocs_api.get_categories)
+    if result and "error" not in result:
         return jsonify({
             "success": True,
-            "async": True,
-            "task_id": task_id,
-            "message": "Задача запущена в фоновом режиме",
-            "status_url": f"/api/v2/tasks/{task_id}"
+            "data": result[:5] if isinstance(result, list) else result,  # Только первые 5 элементов
+            "total_count": len(result) if isinstance(result, list) else 1,
+            "timestamp": datetime.now().isoformat()
         })
-    
-    # Синхронный режим (может таймаутить)
-    try:
-        result = ocs_api.get_categories()
-        
-        if result and "error" in result:
-            return jsonify({
-                "success": False,
-                "error": result.get("error"),
-                "code": result.get("code", 500)
-            }), result.get("code", 500)
-        
-        return jsonify({
-            "success": True,
-            "data": result or [],
-            "cached": True,
-            "async": False,
-            "count": len(result) if isinstance(result, list) else 0
-        })
-            
-    except Exception as e:
-        logger.error(f"Error in get_categories: {e}")
-        # Предлагаем клиенту использовать асинхронный режим
+    else:
         return jsonify({
             "success": False,
-            "error": str(e),
-            "suggestion": "Use ?async=true for heavy requests",
-            "async_url": f"{request.path}?async=true"
-        }), 500
+            "error": result.get("error", "Unknown error") if result else "No response",
+            "code": result.get("code", 500) if result else 500,
+            "timestamp": datetime.now().isoformat()
+        }), result.get("code", 500) if result else 500
 
 @app.route('/api/v2/logistic/shipment/cities')
-def get_cities_route():
+def get_cities():
+    """Получение городов отгрузки"""
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
     
     try:
         result = ocs_api.get_shipment_cities()
         
-        if result and "error" in result:
+        if result and "error" not in result:
+            return jsonify({
+                "success": True,
+                "data": result,
+                "cached": True,
+                "timestamp": datetime.now().isoformat()
+            })
+        else:
+            error_msg = result.get("error", "Unknown error") if result else "No response"
+            error_code = result.get("code", 500) if result else 500
             return jsonify({
                 "success": False,
-                "error": result.get("error"),
-                "code": result.get("code", 500)
-            }), result.get("code", 500)
-        
-        return jsonify({
-            "success": True,
-            "data": result or [],
-            "cached": True
-        })
+                "error": error_msg,
+                "code": error_code,
+                "timestamp": datetime.now().isoformat()
+            }), error_code
             
     except Exception as e:
         logger.error(f"Error in get_cities: {e}")
         return jsonify({
             "success": False,
-            "error": str(e)
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
         }), 500
 
-@app.route('/api/v2/catalog/categories/<path:category>/products')
-def get_products_by_category_route(category):
+@app.route('/api/v2/catalog/categories')
+def get_categories_endpoint():
+    """Получение категорий товаров (с обработкой таймаутов)"""
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
     
-    shipmentcity = request.args.get('shipmentcity', 'Москва')
-    async_mode = request.args.get('async', 'false').lower() == 'true'
+    # Параметр для ограничения глубины (если API медленный)
+    limit_depth = request.args.get('limit_depth', 'false').lower() == 'true'
     
-    # Обработка специальных значений
-    if category in ['undefined', 'null', '']:
+    try:
+        logger.info(f"Fetching categories, limit_depth: {limit_depth}")
+        
+        # Даем больше времени на первый запрос
+        result = ocs_api.get_categories()
+        
+        if result and "error" not in result:
+            # Если запросили ограничение глубины, можно упростить структуру
+            if limit_depth and isinstance(result, list):
+                # Ограничиваем вложенность для отладки
+                simplified = []
+                for item in result[:10]:  # Только первые 10 категорий для отладки
+                    if isinstance(item, dict):
+                        simplified_item = {
+                            'category': item.get('category'),
+                            'name': item.get('name'),
+                            'has_children': bool(item.get('children'))
+                        }
+                        simplified.append(simplified_item)
+                result = simplified
+            
+            return jsonify({
+                "success": True,
+                "data": result,
+                "cached": True,
+                "total_count": len(result) if isinstance(result, list) else 0,
+                "timestamp": datetime.now().isoformat(),
+                "note": "This endpoint may be slow due to large data from OCS"
+            })
+        else:
+            error_msg = result.get("error", "Unknown error") if result else "No response"
+            error_code = result.get("code", 500) if result else 500
+            
+            # Специальная обработка таймаутов
+            if error_code == 408:
+                return jsonify({
+                    "success": False,
+                    "error": "Request timeout - OCS API is slow to respond",
+                    "suggestion": "Try again or contact support",
+                    "code": 408,
+                    "timestamp": datetime.now().isoformat()
+                }), 408
+            
+            return jsonify({
+                "success": False,
+                "error": error_msg,
+                "code": error_code,
+                "timestamp": datetime.now().isoformat()
+            }), error_code
+            
+    except Exception as e:
+        logger.error(f"Error in get_categories: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "suggestion": "Try ?limit_depth=true for faster response",
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/v2/catalog/categories/<path:category>/products')
+def get_products_by_category_endpoint(category):
+    """Получение товаров по категории"""
+    if not ocs_api:
+        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
+    
+    shipment_city = request.args.get('shipmentcity', 'Москва')
+    
+    # Нормализация категории
+    if category in ['all', 'undefined', 'null', '']:
         category = 'all'
     
     try:
-        # Собираем все параметры из запроса
+        # Собираем параметры
         params = request.args.to_dict()
-        
-        # Удаляем shipmentcity из params, т.к. он передается отдельно
         if 'shipmentcity' in params:
-            shipmentcity = params.pop('shipmentcity')
+            shipment_city = params.pop('shipmentcity')
         
-        # Удаляем async флаг
-        if 'async' in params:
-            params.pop('async')
+        logger.info(f"Fetching products for category: {category}, city: {shipment_city}")
         
-        if async_mode and category == 'all':
-            # Для всех категорий используем асинхронный режим
-            task_id = submit_async_task(
-                ocs_api.get_products_by_category,
-                category, shipmentcity, **params
-            )
+        result = ocs_api.get_products_by_category(category, shipment_city, **params)
+        
+        if result and "error" not in result:
+            products = result.get('result', [])
             return jsonify({
                 "success": True,
-                "async": True,
-                "task_id": task_id,
-                "message": "Задача запущена в фоновом режиме",
-                "status_url": f"/api/v2/tasks/{task_id}"
+                "data": result,
+                "category": category,
+                "shipment_city": shipment_city,
+                "product_count": len(products),
+                "timestamp": datetime.now().isoformat()
             })
-        
-        result = ocs_api.get_products_by_category(
-            categories=category,
-            shipmentcity=shipmentcity,
-            **params
-        )
-        
-        if result and "error" in result:
+        else:
+            error_msg = result.get("error", "Unknown error") if result else "No response"
+            error_code = result.get("code", 500) if result else 500
             return jsonify({
                 "success": False,
-                "error": result.get("error"),
-                "code": result.get("code", 500)
-            }), result.get("code", 500)
-        
-        return jsonify({
-            "success": True,
-            "data": result or {"result": []},
-            "total_count": len(result.get('result', [])) if result else 0,
-            "async": False
-        })
+                "error": error_msg,
+                "code": error_code,
+                "timestamp": datetime.now().isoformat()
+            }), error_code
             
     except Exception as e:
         logger.error(f"Error in get_products_by_category: {e}")
         return jsonify({
             "success": False,
             "error": str(e),
-            "suggestion": "For large requests use ?async=true"
-        }), 500
-
-# ===== АСИНХРОННЫЕ ТАСКИ =====
-
-@app.route('/api/v2/tasks/<task_id>')
-def get_task_status(task_id):
-    """Получение статуса асинхронной задачи"""
-    if task_id in results_cache:
-        result = results_cache[task_id]
-        
-        # Очищаем старые результаты (старше 1 часа)
-        if datetime.now() - datetime.fromisoformat(result['timestamp']) > timedelta(hours=1):
-            results_cache.pop(task_id, None)
-            return jsonify({
-                "success": False,
-                "error": "Task expired",
-                "task_id": task_id
-            }), 404
-        
-        if result['status'] == 'completed':
-            response_data = {
-                "success": True,
-                "task_id": task_id,
-                "status": "completed",
-                "timestamp": result['timestamp'],
-                "result": result['result']
-            }
-            # Можно удалить результат после получения
-            # results_cache.pop(task_id, None)
-            return jsonify(response_data)
-        elif result['status'] == 'error':
-            return jsonify({
-                "success": False,
-                "task_id": task_id,
-                "status": "error",
-                "error": result['error'],
-                "timestamp": result['timestamp']
-            }), 500
-    
-    # Проверяем, есть ли задача в очереди
-    # Простая проверка - если task_id не в кэше, значит задача еще в процессе
-    return jsonify({
-        "success": True,
-        "task_id": task_id,
-        "status": "processing",
-        "queue_position": "unknown",
-        "timestamp": datetime.now().isoformat()
-    })
-
-@app.route('/api/v2/catalog/categories/batch/products', methods=['POST'])
-def get_products_by_category_batch_route():
-    if not ocs_api:
-        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
-    
-    try:
-        data = request.get_json()
-        if not data or 'categories' not in data:
-            return jsonify({"success": False, "error": "Необходим массив categories в теле запроса"}), 400
-        
-        categories_list = data['categories']
-        shipment_city = data.get('shipmentcity', 'Москва')
-        params = data.get('params', {})
-        
-        # Используем функцию для обработки больших объемов
-        if len(categories_list) > 50:
-            result = get_categories_products_batch_all(categories_list, shipment_city, **params)
-        else:
-            result = ocs_api.get_products_by_category_batch(categories_list, shipment_city, **params)
-        
-        if result and "error" in result:
-            return jsonify({
-                "success": False,
-                "error": result.get("error"),
-                "code": result.get("code", 500)
-            }), result.get("code", 500)
-        
-        return jsonify({
-            "success": True,
-            "data": result,
-            "total_count": result.get('total_count', len(result.get('result', []))) if result else 0
-        })
-            
-    except Exception as e:
-        logger.error(f"Error in get_products_by_category_batch: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e)
+            "timestamp": datetime.now().isoformat()
         }), 500
 
 @app.route('/api/v2/catalog/products/<path:item_ids>')
-def get_products_by_ids_route(item_ids):
-    if not ocs_api:
-        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
-    
-    shipmentcity = request.args.get('shipmentcity', 'Москва')
-    
-    try:
-        # Собираем все параметры из запроса
-        params = request.args.to_dict()
-        
-        # Удаляем shipmentcity из params, т.к. он передается отдельно
-        if 'shipmentcity' in params:
-            shipmentcity = params.pop('shipmentcity')
-        
-        result = ocs_api.get_products_by_ids(
-            item_ids=item_ids,
-            shipmentcity=shipmentcity,
-            **params
-        )
-        
-        if result and "error" in result:
-            return jsonify({
-                "success": False,
-                "error": result.get("error"),
-                "code": result.get("code", 500)
-            }), result.get("code", 500)
-        
-        return jsonify({
-            "success": True,
-            "data": result or {"result": []},
-            "total_count": len(result.get('result', [])) if result else 0
-        })
-            
-    except Exception as e:
-        logger.error(f"Error in get_products_by_ids: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-@app.route('/api/v2/catalog/products/batch', methods=['POST'])
-def get_products_by_ids_batch_route():
-    if not ocs_api:
-        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
-    
-    try:
-        data = request.get_json()
-        if not data or 'items' not in data:
-            return jsonify({"success": False, "error": "Необходим массив items в теле запроса"}), 400
-        
-        items_list = data['items']
-        shipment_city = data.get('shipmentcity', 'Москва')
-        params = data.get('params', {})
-        
-        # Используем функцию для обработки больших объемов
-        if len(items_list) > 100:
-            result = get_products_by_ids_batch_all(items_list, shipment_city, **params)
-        else:
-            result = ocs_api.get_products_by_ids_batch(items_list, shipment_city, **params)
-        
-        if result and "error" in result:
-            return jsonify({
-                "success": False,
-                "error": result.get("error"),
-                "code": result.get("code", 500)
-            }), result.get("code", 500)
-        
-        return jsonify({
-            "success": True,
-            "data": result,
-            "total_count": result.get('total_count', len(result.get('result', []))) if result else 0
-        })
-            
-    except Exception as e:
-        logger.error(f"Error in get_products_by_ids_batch: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-@app.route('/api/v2/catalog/products/<path:item_ids>/certificates')
-def get_certificates_route(item_ids):
-    if not ocs_api:
-        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
-    
-    actuality = request.args.get('actuality', 'actual')
-    
-    try:
-        result = ocs_api.get_certificates(item_ids, actuality)
-        
-        if result and "error" in result:
-            return jsonify({
-                "success": False,
-                "error": result.get("error"),
-                "code": result.get("code", 500)
-            }), result.get("code", 500)
-        
-        return jsonify({
-            "success": True,
-            "data": result or {"result": []}
-        })
-            
-    except Exception as e:
-        logger.error(f"Error in get_certificates: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-@app.route('/api/v2/catalog/products/batch/certificates', methods=['POST'])
-def get_certificates_batch_route():
-    if not ocs_api:
-        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
-    
-    try:
-        data = request.get_json()
-        if not data or 'items' not in data:
-            return jsonify({"success": False, "error": "Необходим массив items в теле запроса"}), 400
-        
-        items_list = data['items']
-        actuality = data.get('actuality', 'actual')
-        
-        # Разбиваем на батчи для больших объемов
-        all_certificates = []
-        for batch in batch_process_items(items_list, batch_size=100):
-            result = ocs_api.get_certificates_batch(batch, actuality)
-            
-            if result and "error" not in result:
-                batch_certificates = result.get('result', [])
-                all_certificates.extend(batch_certificates)
-                time.sleep(0.1)
-            else:
-                logger.error(f"Ошибка в batch-запросе сертификатов: {result.get('error')}")
-        
-        return jsonify({
-            "success": True,
-            "data": {"result": all_certificates},
-            "total_count": len(all_certificates)
-        })
-            
-    except Exception as e:
-        logger.error(f"Error in get_certificates_batch: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-# ===== СПРАВОЧНАЯ ИНФОРМАЦИЯ =====
-
-@app.route('/api/v2/logistic/stocks/locations')
-def get_stock_locations_route():
+def get_products_by_ids_endpoint(item_ids):
+    """Получение товаров по ID"""
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
     
     shipment_city = request.args.get('shipmentcity', 'Москва')
     
     try:
-        result = ocs_api.get_stock_locations(shipment_city)
+        # Собираем параметры
+        params = request.args.to_dict()
+        if 'shipmentcity' in params:
+            shipment_city = params.pop('shipmentcity')
         
-        if result and "error" in result:
+        # Ограничиваем количество ID для одного запроса
+        ids_list = item_ids.split(',')
+        if len(ids_list) > 50:
             return jsonify({
                 "success": False,
-                "error": result.get("error"),
-                "code": result.get("code", 500)
-            }), result.get("code", 500)
+                "error": "Too many IDs (max 50 per request)",
+                "suggestion": "Use batch endpoint for more IDs",
+                "batch_endpoint": "/api/v2/catalog/products/batch",
+                "timestamp": datetime.now().isoformat()
+            }), 400
         
-        return jsonify({
-            "success": True,
-            "data": result or []
-        })
-            
-    except Exception as e:
-        logger.error(f"Error in get_stock_locations: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-# ===== КОНТЕНТ =====
-
-@app.route('/api/v2/content/<path:item_ids>')
-def get_content_route(item_ids):
-    if not ocs_api:
-        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
-    
-    try:
-        result = ocs_api.get_content(item_ids)
+        logger.info(f"Fetching {len(ids_list)} products, city: {shipment_city}")
         
-        if result and "error" in result:
+        result = ocs_api.get_products_by_ids(item_ids, shipment_city, **params)
+        
+        if result and "error" not in result:
+            products = result.get('result', [])
+            return jsonify({
+                "success": True,
+                "data": result,
+                "shipment_city": shipment_city,
+                "product_count": len(products),
+                "timestamp": datetime.now().isoformat()
+            })
+        else:
+            error_msg = result.get("error", "Unknown error") if result else "No response"
+            error_code = result.get("code", 500) if result else 500
             return jsonify({
                 "success": False,
-                "error": result.get("error"),
-                "code": result.get("code", 500)
-            }), result.get("code", 500)
-        
-        return jsonify({
-            "success": True,
-            "data": result or {"result": []}
-        })
+                "error": error_msg,
+                "code": error_code,
+                "timestamp": datetime.now().isoformat()
+            }), error_code
             
     except Exception as e:
-        logger.error(f"Error in get_content: {e}")
+        logger.error(f"Error in get_products_by_ids: {e}")
         return jsonify({
             "success": False,
-            "error": str(e)
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
         }), 500
 
-@app.route('/api/v2/content/batch', methods=['POST'])
-def get_content_batch_route():
+@app.route('/api/v2/catalog/products/batch', methods=['POST'])
+def get_products_batch_endpoint():
+    """Batch-запрос товаров"""
     if not ocs_api:
         return jsonify({"success": False, "error": "API ключ не настроен"}), 500
     
     try:
         data = request.get_json()
-        if not data or 'items' not in data:
-            return jsonify({"success": False, "error": "Необходим массив items в теле запроса"}), 400
+        if not data:
+            return jsonify({"success": False, "error": "No JSON data provided"}), 400
         
-        items_list = data['items']
+        item_ids = data.get('items', [])
+        shipment_city = data.get('shipmentcity', 'Москва')
+        params = data.get('params', {})
         
-        # Разбиваем на батчи для больших объемов
-        all_content = []
-        for batch in batch_process_items(items_list, batch_size=100):
-            result = ocs_api.get_content_batch(batch)
-            
-            if result and "error" not in result:
-                batch_content = result.get('result', [])
-                all_content.extend(batch_content)
-                time.sleep(0.1)
-            else:
-                logger.error(f"Ошибка в batch-запросе контента: {result.get('error')}")
+        if not item_ids:
+            return jsonify({"success": False, "error": "No items provided"}), 400
         
-        return jsonify({
-            "success": True,
-            "data": {"result": all_content},
-            "total_count": len(all_content)
-        })
-            
-    except Exception as e:
-        logger.error(f"Error in get_content_batch: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-@app.route('/api/v2/content/changes')
-def get_content_changes_route():
-    if not ocs_api:
-        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
-    
-    from_date = request.args.get('from')
-    if not from_date:
-        return jsonify({"success": False, "error": "Необходим параметр from"}), 400
-    
-    try:
-        result = ocs_api.get_content_changes(from_date)
-        
-        if result and "error" in result:
+        # Ограничиваем размер батча
+        if len(item_ids) > 100:
             return jsonify({
                 "success": False,
-                "error": result.get("error"),
-                "code": result.get("code", 500)
-            }), result.get("code", 500)
+                "error": "Batch too large (max 100 items)",
+                "received": len(item_ids),
+                "timestamp": datetime.now().isoformat()
+            }), 400
         
-        return jsonify({
-            "success": True,
-            "data": result or []
-        })
+        logger.info(f"Batch request for {len(item_ids)} products, city: {shipment_city}")
+        
+        result = ocs_api.get_products_by_ids_batch(item_ids, shipment_city, **params)
+        
+        if result and "error" not in result:
+            products = result.get('result', [])
+            return jsonify({
+                "success": True,
+                "data": result,
+                "batch_size": len(item_ids),
+                "product_count": len(products),
+                "timestamp": datetime.now().isoformat()
+            })
+        else:
+            error_msg = result.get("error", "Unknown error") if result else "No response"
+            error_code = result.get("code", 500) if result else 500
+            return jsonify({
+                "success": False,
+                "error": error_msg,
+                "code": error_code,
+                "timestamp": datetime.now().isoformat()
+            }), error_code
             
     except Exception as e:
-        logger.error(f"Error in get_content_changes: {e}")
+        logger.error(f"Error in batch endpoint: {e}")
         return jsonify({
             "success": False,
-            "error": str(e)
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
         }), 500
 
-# ===== ОТЛАДОЧНЫЕ ЭНДПОИНТЫ =====
+# ===== УТИЛИТЫ И ОТЛАДКА =====
 
 @app.route('/api/v2/debug/cache')
 def debug_cache():
-    """Эндпоинт для отладки кэша"""
+    """Отладка кэша"""
     cache_info = []
     for key, (value, timestamp) in cache.items():
         age = datetime.now() - timestamp
         cache_info.append({
-            "key": key[:50] + "..." if len(key) > 50 else key,
-            "age_seconds": age.total_seconds(),
-            "type": type(value).__name__,
-            "has_error": isinstance(value, dict) and "error" in value
+            "key": key[:100] + "..." if len(key) > 100 else key,
+            "age_seconds": int(age.total_seconds()),
+            "age_human": str(age).split('.')[0],
+            "type": type(value).__name__
         })
     
     return jsonify({
@@ -1120,7 +530,7 @@ def debug_cache():
     })
 
 @app.route('/api/v2/debug/clear-cache')
-def clear_cache():
+def clear_cache_endpoint():
     """Очистка кэша"""
     global cache
     old_size = len(cache)
@@ -1133,90 +543,86 @@ def clear_cache():
         "timestamp": datetime.now().isoformat()
     })
 
-# ===== УТИЛИТЫ =====
-
-@app.route('/api/v2/utils/batch-split', methods=['POST'])
-def batch_split():
-    """Утилита для разбиения большого списка на батчи"""
-    try:
-        data = request.get_json()
-        if not data or 'items' not in data:
-            return jsonify({"success": False, "error": "Необходим массив items"}), 400
-        
-        items = data['items']
-        batch_size = data.get('batch_size', 100)
-        
-        batches = list(batch_process_items(items, batch_size))
-        
-        return jsonify({
-            "success": True,
-            "total_items": len(items),
-            "batch_size": batch_size,
-            "batches_count": len(batches),
-            "batches": batches
-        })
-            
-    except Exception as e:
-        logger.error(f"Error in batch_split: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
 @app.route('/api/v2/debug/status')
 def debug_status():
-    """Расширенный статус сервиса"""
+    """Статус сервиса"""
     return jsonify({
         "service": "OCS API Proxy",
-        "timestamp": datetime.now().isoformat(),
-        "cache": {
-            "size": len(cache),
-            "keys": list(cache.keys())[:5] + ["..."] if len(cache) > 5 else list(cache.keys())
-        },
-        "async": {
-            "queue_size": task_queue.qsize(),
-            "results_cache_size": len(results_cache),
-            "worker_alive": worker_thread.is_alive()
-        },
+        "status": "running",
         "ocs_api": {
             "configured": bool(ocs_api),
-            "base_url": ocs_api.base_url if ocs_api else None
+            "base_url": ocs_api.base_url if ocs_api else None,
+            "api_key_length": len(api_key) if api_key else 0
         },
-        "timeouts": {
-            "categories": "60s/300s",
-            "products": "30s/180s",
-            "default": "30s/120s"
+        "cache": {
+            "size": len(cache),
+            "keys": [k[:50] + "..." if len(k) > 50 else k for k in list(cache.keys())[:3]]
+        },
+        "timestamp": datetime.now().isoformat(),
+        "environment": {
+            "flask_env": os.environ.get('FLASK_ENV', 'production'),
+            "port": os.environ.get('PORT', 10000)
         }
     })
+
+@app.route('/api/v2/debug/test-slow')
+def test_slow_endpoint():
+    """Тестовый эндпоинт для проверки таймаутов"""
+    delay = int(request.args.get('delay', 10))
     
-@app.route('/api/v2/utils/batch-status')
-def batch_status():
-    """Статус batch-обработки"""
+    logger.info(f"Test slow endpoint with delay: {delay}s")
+    
+    if delay > 30:
+        return jsonify({
+            "success": False,
+            "error": "Delay too long (max 30s)",
+            "timestamp": datetime.now().isoformat()
+        }), 400
+    
+    time.sleep(delay)
+    
     return jsonify({
         "success": True,
-        "status": "active",
-        "max_batch_size": {
-            "categories": 50,
-            "products": 100,
-            "certificates": 100,
-            "content": 100
-        },
-        "recommendations": [
-            "Используйте batch-методы для больших объемов данных",
-            "Разбивайте списки на батчи по 50-100 элементов",
-            "Добавляйте задержки между batch-запросами",
-            "Кэшируйте справочную информацию"
-        ]
+        "message": f"Delayed response after {delay} seconds",
+        "timestamp": datetime.now().isoformat()
     })
+
+# ===== ОБРАБОТКА ОШИБОК =====
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({
+        "success": False,
+        "error": "Not found",
+        "message": str(error),
+        "timestamp": datetime.now().isoformat()
+    }), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    logger.error(f"Internal error: {error}")
+    return jsonify({
+        "success": False,
+        "error": "Internal server error",
+        "message": "An unexpected error occurred",
+        "timestamp": datetime.now().isoformat()
+    }), 500
+
+# ===== ЗАПУСК СЕРВЕРА =====
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     
-    # Для разработки используем debug сервер с большими таймаутами
+    logger.info(f"Starting OCS API Proxy on port {port}")
+    logger.info(f"OCS API URL: {ocs_api.base_url if ocs_api else 'Not configured'}")
+    logger.info(f"Cache size: {len(cache)}")
+    
+    # Запуск с увеличенными таймаутами для разработки
     if os.environ.get('FLASK_ENV') == 'development':
-        logger.info("Running in development mode with increased timeouts")
+        logger.info("Running in development mode")
         app.run(host='0.0.0.0', port=port, debug=True, threaded=True)
     else:
-        # Для production нужно настроить Gunicorn с правильными параметрами
-        logger.info(f"Starting server on port {port}")
-        app.run(host='0.0.0.0', port=port, debug=False)
+        # Для production используем waitress или gunicorn
+        logger.info("Running in production mode")
+        from waitress import serve
+        serve(app, host='0.0.0.0', port=port, threads=50)
