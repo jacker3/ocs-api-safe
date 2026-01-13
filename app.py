@@ -129,17 +129,69 @@ class OCSAPI:
         """Получение городов с кэшированием"""
         return self._make_request("logistic/shipment/cities")
     
-    def get_products_by_category(self, categories: str, shipmentcity: str, **params):
+    def get_products_paginated(self, endpoint_builder, initial_params, max_items=1000):
+    """
+    Универсальный метод для постраничной загрузки товаров.
+    
+    Args:
+        endpoint_builder: функция, которая принимает параметры и возвращает endpoint
+        initial_params: начальные параметры запроса
+        max_items: максимальное количество товаров для загрузки
+    
+    Returns:
+        list: объединенный список всех товаров
+    """
+    all_products = []
+    offset = 0
+    limit = initial_params.get('limit', 50)
+    
+    while len(all_products) < max_items:
+        # Создаем копию параметров для текущей страницы
+        current_params = initial_params.copy()
+        current_params['offset'] = offset
+        current_params['limit'] = limit
+        
+        # Получаем текущую страницу
+        response = self._make_request(
+            endpoint_builder(current_params),
+            params=current_params
+        )
+        
+        if not response or "error" in response:
+            logger.error(f"Ошибка при пагинации: {response.get('error')}")
+            break
+        
+        # Извлекаем товары из ответа (структура может отличаться)
+        products = response.get('result', [])
+        if not products:
+            break
+        
+        all_products.extend(products)
+        
+        # Если получено меньше товаров, чем запрошено, значит это последняя страница
+        if len(products) < limit:
+            break
+        
+        # Увеличиваем смещение для следующей страницы
+        offset += limit
+        
+        # Небольшая задержка, чтобы не превысить лимиты API
+        time.sleep(0.1)
+    
+    return all_products
+    def get_products_by_category(self, categories: str, shipment_city: str, **params):
         endpoint = f"catalog/categories/{categories}/products"
-        params['shipmentcity'] = shipmentcity
+        params['shipmentcity'] = shipment_city
+        # Добавляем пагинацию, если не передана
         params['limit'] = params.get('limit', 50)
         return self._make_request(endpoint, params=params)
     
-    def search_products(self, search_term: str, shipmentcity: str, **params):
+    def search_products(self, search_term: str, shipment_city: str, **params):
         endpoint = f"catalog/categories/all/products"
-        params['shipmentcity'] = shipmentcity
+        params['shipmentcity'] = shipment_city
         params['search'] = search_term
-        params['limit'] = params.get('limit', 50)
+        # Добавляем пагинацию, если не передана
+        params['limit'] = params.get('limit', 50)  # Начните с 50
         return self._make_request(endpoint, params=params)
 
 # Инициализация API
@@ -351,48 +403,48 @@ def get_products_by_category(category):
 @app.route('/api/v2/catalog/categories/all/products')
 def search_products():
     if not ocs_api:
-        response = jsonify({
-            "success": False, 
-            "error": "API ключ не настроен"
-        })
-        response.headers.add('Content-Type', 'application/json')
-        return response, 500
+        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
     
     search_term = request.args.get('q', '')
-    shipmentcity = request.args.get('shipmentcity', 'Красноярск')
+    shipment_city = request.args.get('shipmentcity') or request.args.get('shipment_city') or 'Красноярск'
     
     if not search_term:
-        response = jsonify({
+        return jsonify({
             "success": False,
             "error": "Не указан поисковый запрос",
             "message": "Используйте параметр q для поиска"
-        })
-        response.headers.add('Content-Type', 'application/json')
-        return response, 400
+        }), 400
     
     try:
-        products = ocs_api.search_products(
-            search_term=search_term,
-            shipmentcity=shipmentcity,
-            **request.args.to_dict()
+        # Базовые параметры
+        base_params = {
+            'shipmentcity': shipment_city,
+            'search': search_term,
+            'limit': int(request.args.get('limit', 50)),  # Параметр от клиента
+            'onlyavailable': request.args.get('onlyavailable', 'false'),
+            'includeregular': request.args.get('includeregular', 'true'),
+            # ... другие параметры из request.args
+        }
+        
+        # Функция для построения endpoint
+        def build_endpoint(params):
+            return "catalog/categories/all/products"
+        
+        # Загружаем данные с пагинацией
+        all_products = ocs_api.get_products_paginated(
+            endpoint_builder=build_endpoint,
+            initial_params=base_params,
+            max_items=1000  # или другой лимит
         )
         
-        if products and "error" in products:
-            response = jsonify({
-                "success": False,
-                "error": products.get("error"),
-                "message": "Ошибка при подключении к OCS API",
-                "timestamp": datetime.now().isoformat()
-            })
-        else:
-            response = jsonify({
-                "success": True if products else False,
-                "data": products or {"result": []},
-                "search_term": search_term,
-                "total_count": len(products.get('result', [])) if products else 0,
-                "timestamp": datetime.now().isoformat()
-            })
-            
+        response = jsonify({
+            "success": True,
+            "data": {"result": all_products},
+            "search_term": search_term,
+            "total_count": len(all_products),
+            "timestamp": datetime.now().isoformat()
+        })
+        
     except Exception as e:
         logger.error(f"Error in search_products: {e}")
         response = jsonify({
