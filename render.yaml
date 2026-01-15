@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: ocs-api-safe
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --config gunicorn_config.py app:app
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: OCS_API_KEY
+        sync: false
+    autoDeploy: true
