@@ -1,5 +1,6 @@
 import os
 import requests
+import json
 from flask import Flask, jsonify
 from flask_cors import CORS
 
@@ -17,51 +18,27 @@ class OCSClient:
             'accept': 'application/json',
             'X-API-Key': API_KEY,
         })
-        # Увеличиваем таймауты для сессии
-        self.timeout = (60, 300)  # 60 сек на соединение, 300 на чтение (5 минут)
+        # Увеличиваем таймауты еще больше
+        self.timeout = (120, 600)  # 120 сек на соединение, 600 на чтение (10 минут)
     
     def get_categories(self):
         """Получение категорий с увеличенными таймаутами"""
         url = f'{BASE_URL}/catalog/categories'
         try:
+            # Используем более долгий таймаут
             response = self.session.get(url, timeout=self.timeout)
-            response.raise_for_status()  # Проверяем статус ответа
+            response.raise_for_status()
             return response.json()
         except requests.exceptions.Timeout:
-            return {'error': 'Request timeout - OCS API is too slow'}
+            # Возвращаем структуру с ошибкой, но без падения
+            return {'error': 'Request timeout - OCS API is too slow', 'categories': []}
         except requests.exceptions.RequestException as e:
-            return {'error': f'Request failed: {str(e)}'}
+            return {'error': f'Request failed: {str(e)}', 'categories': []}
         except Exception as e:
-            return {'error': f'Unexpected error: {str(e)}'}
+            return {'error': f'Unexpected error: {str(e)}', 'categories': []}
 
 # Инициализация клиента
 client = OCSClient() if API_KEY else None
-
-def build_category_tree(categories):
-    """Преобразует плоский список категорий в древовидную структуру"""
-    if not categories:
-        return []
-    
-    # Создаем словарь для быстрого доступа к категориям по коду
-    category_dict = {}
-    for category in categories:
-        category_dict[category['category']] = {
-            'category': category['category'],
-            'name': category['name'],
-            'children': []
-        }
-    
-    # Строим дерево
-    tree = []
-    for category in categories:
-        # Если у категории есть родитель (определяется по коду)
-        # В документации указано, что структура уже древовидная
-        # Проверяем, является ли это корневым элементом
-        if 'parent' not in category or not category.get('parent'):
-            # Добавляем корневые категории
-            tree.append(category_dict[category['category']])
-    
-    return tree
 
 @app.route('/')
 def home():
@@ -69,38 +46,49 @@ def home():
         'service': 'OCS Categories API',
         'endpoints': ['/categories'],
         'api_key_configured': bool(API_KEY),
-        'note': 'Categories endpoint may take several minutes to load'
+        'note': 'Categories endpoint may take several minutes to load. Please be patient.'
     })
 
 @app.route('/categories')
 def get_categories():
     if not client:
-        return jsonify({'error': 'API key not configured'}), 500
+        return jsonify({'error': 'API key not configured', 'categories': []}), 500
     
-    result = client.get_categories()
-    
-    if 'error' in result:
-        return jsonify(result), 500
-    
-    # Согласно документации, API возвращает уже древовидную структуру
-    # Проверяем, есть ли поле 'children' в ответе
-    if isinstance(result, dict) and 'children' in result:
-        # Если ответ - это один объект с children
+    try:
+        result = client.get_categories()
+        
+        if 'error' in result:
+            app.logger.warning(f"OCS API error: {result['error']}")
+            # Возвращаем ошибку, но с 200 статусом, чтобы не было 502
+            return jsonify(result)
+        
         return jsonify(result)
-    elif isinstance(result, list):
-        # Если ответ - это список категорий, строим дерево
-        tree = build_category_tree(result)
-        return jsonify(tree)
-    else:
-        # Возвращаем как есть
-        return jsonify(result)
+        
+    except Exception as e:
+        app.logger.error(f"Unexpected error in /categories: {str(e)}")
+        return jsonify({'error': f'Internal server error: {str(e)}', 'categories': []}), 500
 
 @app.route('/health')
 def health():
-    """Простая проверка здоровья"""
+    """Простая проверка здоровья - всегда быстрая"""
     return jsonify({'status': 'ok', 'api_configured': bool(API_KEY)})
+
+@app.route('/test')
+def test():
+    """Тестовый эндпоинт для проверки работы без таймаута"""
+    return jsonify({
+        'status': 'ok',
+        'message': 'Service is running',
+        'timestamp': '2026-01-15T06:00:00Z'
+    })
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 10000))
-    # Запуск с увеличенными настройками
-    app.run(host='0.0.0.0', port=port, threaded=True)
+    # Для локальной разработки с очень большими таймаутами
+    app.run(
+        host='0.0.0.0', 
+        port=port, 
+        threaded=True,
+        # Эти параметры помогут на Render
+        debug=False
+    )
