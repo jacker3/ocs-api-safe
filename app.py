@@ -1,6 +1,6 @@
 import os
 import requests
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -267,8 +267,6 @@ def get_products_batch(city):
     
     Query параметры (аналогично)
     """
-    from flask import request
-    
     if not request.is_json:
         return jsonify({'error': 'Request must be JSON'}), 400
     
