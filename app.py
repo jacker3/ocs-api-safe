@@ -1,12 +1,7 @@
 import os
 import requests
-import json
-import threading
-import time
-from datetime import datetime
 from flask import Flask, jsonify
 from flask_cors import CORS
-import atexit
 
 app = Flask(__name__)
 CORS(app)
@@ -15,169 +10,348 @@ CORS(app)
 API_KEY = os.getenv('OCS_API_KEY')
 BASE_URL = 'https://connector.b2b.ocs.ru/api/v2'
 
-# Кеш категорий в памяти
-categories_cache = {
-    'data': {'categories': [], 'error': 'Initializing...'},
-    'last_update': None,
-    'is_updating': False,
-    'last_error': None
-}
-
 class OCSClient:
     def __init__(self):
-        self.session = None
-        if API_KEY:
-            self.session = requests.Session()
+        self.session = requests.Session() if API_KEY else None
+        if self.session:
             self.session.headers.update({
                 'accept': 'application/json',
                 'X-API-Key': API_KEY,
             })
-            # Короткий таймаут для фоновых задач
-            self.timeout = (10, 30)
+            self.timeout = (10, 30)  # 10 сек на соединение, 30 на чтение
     
-    def get_categories_safe(self):
-        """Безопасное получение категорий с коротким таймаутом"""
+    # === КАТЕГОРИИ ===
+    def get_categories(self):
+        """Получение дерева товарных категорий"""
         if not self.session:
             return {'error': 'API key not configured', 'categories': []}
         
-        url = f'{BASE_URL}/catalog/categories'
         try:
-            response = self.session.get(url, timeout=self.timeout)
+            response = self.session.get(
+                f'{BASE_URL}/catalog/categories',
+                timeout=self.timeout
+            )
             response.raise_for_status()
             return response.json()
-        except requests.exceptions.Timeout:
-            return {'error': 'OCS API timeout (30s)', 'categories': []}
-        except requests.exceptions.RequestException as e:
-            return {'error': f'Request failed: {str(e)}', 'categories': []}
         except Exception as e:
-            return {'error': f'Unexpected error: {str(e)}', 'categories': []}
+            return {'error': str(e), 'categories': []}
+    
+    # === ТОВАРЫ ПО КАТЕГОРИЯМ ===
+    def get_products_by_category(self, category_code, shipment_city, params=None):
+        """
+        Получение товаров по категории
+        
+        Args:
+            category_code: Код категории или 'all' для всех
+            shipment_city: Город отгрузки
+            params: Дополнительные параметры
+        """
+        if not self.session:
+            return {'error': 'API key not configured', 'products': []}
+        
+        try:
+            url = f'{BASE_URL}/catalog/categories/{category_code}/products'
+            
+            # Базовые параметры
+            query_params = {'shipmentcity': shipment_city}
+            
+            # Добавляем дополнительные параметры
+            if params:
+                query_params.update(params)
+            
+            response = self.session.get(
+                url,
+                params=query_params,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            return {'error': str(e), 'products': []}
+    
+    # === ТОВАРЫ ПО СПИСКУ ID ===
+    def get_products_by_ids(self, item_ids, shipment_city, params=None):
+        """
+        Получение товаров по списку ID
+        
+        Args:
+            item_ids: Список ID товаров через запятую или 'all'
+            shipment_city: Город отгрузки
+            params: Дополнительные параметры
+        """
+        if not self.session:
+            return {'error': 'API key not configured', 'products': []}
+        
+        try:
+            url = f'{BASE_URL}/catalog/products/{item_ids}'
+            
+            # Базовые параметры
+            query_params = {'shipmentcity': shipment_city}
+            
+            # Добавляем дополнительные параметры
+            if params:
+                query_params.update(params)
+            
+            response = self.session.get(
+                url,
+                params=query_params,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            return {'error': str(e), 'products': []}
+    
+    # === BATCH ВЕРСИЯ ТОВАРОВ ПО ID ===
+    def get_products_batch(self, item_ids_list, shipment_city, params=None):
+        """
+        Batch версия получения товаров (POST запрос)
+        
+        Args:
+            item_ids_list: Список ID товаров ['1000459749', '1000459646', ...]
+            shipment_city: Город отгрузки
+            params: Дополнительные параметры
+        """
+        if not self.session:
+            return {'error': 'API key not configured', 'products': []}
+        
+        try:
+            url = f'{BASE_URL}/catalog/products/batch'
+            
+            # Базовые параметры
+            query_params = {'shipmentcity': shipment_city}
+            
+            # Добавляем дополнительные параметры
+            if params:
+                query_params.update(params)
+            
+            response = self.session.post(
+                url,
+                params=query_params,
+                json=item_ids_list,  # Тело запроса с массивом ID
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            return {'error': str(e), 'products': []}
+    
+    # === ПОЛУЧЕНИЕ ГОРОДОВ ОТГРУЗКИ ===
+    def get_shipment_cities(self):
+        """Получение списка доступных городов отгрузки"""
+        if not self.session:
+            return {'error': 'API key not configured', 'cities': []}
+        
+        try:
+            response = self.session.get(
+                f'{BASE_URL}/logistic/shipment/cities',
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            return {'error': str(e), 'cities': []}
+    
+    # === ПОЛУЧЕНИЕ ЛОКАЦИЙ ТОВАРА ===
+    def get_stock_locations(self, shipment_city):
+        """Получение доступных местоположений товара"""
+        if not self.session:
+            return {'error': 'API key not configured', 'locations': []}
+        
+        try:
+            response = self.session.get(
+                f'{BASE_URL}/logistic/stocks/locations',
+                params={'shipmentcity': shipment_city},
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            return {'error': str(e), 'locations': []}
+    
+    # === ПОЛУЧЕНИЕ СЕРТИФИКАТОВ ===
+    def get_certificates(self, item_ids, actuality='actual'):
+        """
+        Получение сертификатов для товаров
+        
+        Args:
+            item_ids: Список ID товаров через запятую
+            actuality: 'actual' - только действующие, 'expired' - истекшие, 'all' - все
+        """
+        if not self.session:
+            return {'error': 'API key not configured', 'certificates': []}
+        
+        try:
+            response = self.session.get(
+                f'{BASE_URL}/catalog/products/{item_ids}/certificates',
+                params={'actuality': actuality},
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            return {'error': str(e), 'certificates': []}
 
 # Инициализация клиента
-client = OCSClient() if API_KEY else None
+client = OCSClient()
 
-def update_categories_background():
-    """Фоновая задача для обновления категорий"""
-    if not client:
-        return
-    
-    categories_cache['is_updating'] = True
-    try:
-        result = client.get_categories_safe()
-        categories_cache['data'] = result
-        categories_cache['last_update'] = datetime.now()
-        categories_cache['last_error'] = result.get('error')
-        app.logger.info(f"Categories updated at {datetime.now()}")
-    except Exception as e:
-        categories_cache['last_error'] = str(e)
-        app.logger.error(f"Failed to update categories: {str(e)}")
-    finally:
-        categories_cache['is_updating'] = False
-
-def start_background_updater():
-    """Запускает фоновое обновление категорий"""
-    if not API_KEY:
-        return
-    
-    # Первое обновление
-    update_categories_background()
-    
-    # Запускаем периодическое обновление каждые 5 минут
-    def updater():
-        while True:
-            time.sleep(300)  # 5 минут
-            if not categories_cache['is_updating']:
-                update_categories_background()
-    
-    thread = threading.Thread(target=updater, daemon=True)
-    thread.start()
-    return thread
-
-# Запускаем фоновое обновление при старте
-background_thread = None
-
-@app.before_first_request
-def initialize():
-    global background_thread
-    if API_KEY:
-        background_thread = start_background_updater()
+# ========== ROUTES ==========
 
 @app.route('/')
 def home():
     return jsonify({
-        'service': 'OCS Categories API',
-        'endpoints': ['/categories', '/health', '/status'],
-        'api_key_configured': bool(API_KEY),
-        'cached': True,
-        'note': 'Categories are cached and updated in background'
+        'service': 'OCS B2B API Wrapper',
+        'version': '1.0',
+        'endpoints': {
+            'categories': '/categories',
+            'products_by_category': '/products/category/<category>/<city>',
+            'products_by_ids': '/products/ids/<item_ids>/<city>',
+            'products_batch': '/products/batch/<city> (POST)',
+            'cities': '/cities',
+            'locations': '/locations/<city>',
+            'certificates': '/certificates/<item_ids>',
+            'health': '/health',
+            'test': '/test'
+        },
+        'documentation': 'См. API-коннектор B2B документацию OCS'
     })
 
 @app.route('/categories')
 def get_categories():
-    """Возвращает кешированные категории"""
-    return jsonify(categories_cache['data'])
+    """Получение всех категорий"""
+    return jsonify(client.get_categories())
+
+@app.route('/products/category/<category>/<city>')
+def get_products_by_category(category, city):
+    """
+    Получение товаров по категории
+    
+    Query параметры:
+    - onlyavailable: true/false (только доступные)
+    - includeregular: true/false (кондиционные)
+    - includesale: true/false (распродажа)
+    - includeuncondition: true/false (некондиция)
+    - includemissing: true/false (отсутствующие)
+    """
+    params = {
+        'onlyavailable': request.args.get('onlyavailable', 'true'),
+        'includeregular': request.args.get('includeregular', 'true'),
+        'includesale': request.args.get('includesale', 'false'),
+        'includeuncondition': request.args.get('includeuncondition', 'false'),
+        'includemissing': request.args.get('includemissing', 'false'),
+        'withdescriptions': request.args.get('withdescriptions', 'true'),
+    }
+    return jsonify(client.get_products_by_category(category, city, params))
+
+@app.route('/products/ids/<item_ids>/<city>')
+def get_products_by_ids(item_ids, city):
+    """
+    Получение товаров по списку ID
+    
+    Query параметры (аналогично категориям)
+    """
+    params = {
+        'includeregular': request.args.get('includeregular', 'true'),
+        'includesale': request.args.get('includesale', 'false'),
+        'includeuncondition': request.args.get('includeuncondition', 'false'),
+    }
+    return jsonify(client.get_products_by_ids(item_ids, city, params))
+
+@app.route('/products/batch/<city>', methods=['POST'])
+def get_products_batch(city):
+    """
+    Batch получение товаров (POST)
+    
+    Тело запроса: JSON массив ID товаров
+    ["1000459749", "1000459646", ...]
+    
+    Query параметры (аналогично)
+    """
+    from flask import request
+    
+    if not request.is_json:
+        return jsonify({'error': 'Request must be JSON'}), 400
+    
+    item_ids = request.get_json()
+    if not isinstance(item_ids, list):
+        return jsonify({'error': 'Request body must be a list of item IDs'}), 400
+    
+    params = {
+        'includeregular': request.args.get('includeregular', 'true'),
+        'includesale': request.args.get('includesale', 'false'),
+        'includeuncondition': request.args.get('includeuncondition', 'false'),
+    }
+    
+    return jsonify(client.get_products_batch(item_ids, city, params))
+
+@app.route('/cities')
+def get_cities():
+    """Получение доступных городов отгрузки"""
+    return jsonify(client.get_shipment_cities())
+
+@app.route('/locations/<city>')
+def get_locations(city):
+    """Получение доступных местоположений товара"""
+    return jsonify(client.get_stock_locations(city))
+
+@app.route('/certificates/<item_ids>')
+def get_certificates(item_ids):
+    """
+    Получение сертификатов для товаров
+    
+    Query параметры:
+    - actuality: actual/expired/all (по умолчанию: actual)
+    """
+    actuality = request.args.get('actuality', 'actual')
+    return jsonify(client.get_certificates(item_ids, actuality))
 
 @app.route('/health')
 def health():
-    """Проверка здоровья - всегда быстрая"""
+    """Проверка здоровья API"""
     return jsonify({
         'status': 'ok',
-        'api_configured': bool(API_KEY),
-        'cached_data_available': categories_cache['last_update'] is not None
+        'ocs_api_configured': bool(API_KEY),
+        'api_key_length': len(API_KEY) if API_KEY else 0
     })
 
-@app.route('/status')
-def status():
-    """Статус обновления категорий"""
+@app.route('/test')
+def test():
+    """Тестовый эндпоинт"""
     return jsonify({
-        'last_update': categories_cache['last_update'].isoformat() if categories_cache['last_update'] else None,
-        'is_updating': categories_cache['is_updating'],
-        'last_error': categories_cache['last_error'],
-        'api_configured': bool(API_KEY)
+        'message': 'OCS API Wrapper is working',
+        'endpoints_available': [
+            '/categories',
+            '/products/category/all/Москва',
+            '/products/ids/1000459749,1000459646/Москва',
+            '/cities',
+            '/locations/Москва'
+        ]
     })
 
-@app.route('/force-update')
-def force_update():
-    """Принудительное обновление категорий (только если не обновляется)"""
-    if not API_KEY:
-        return jsonify({'error': 'API key not configured'}), 400
-    
-    if categories_cache['is_updating']:
-        return jsonify({'error': 'Update already in progress'}), 429
-    
-    # Запускаем обновление в отдельном потоке
-    thread = threading.Thread(target=update_categories_background, daemon=True)
-    thread.start()
-    
-    return jsonify({
-        'message': 'Update started in background',
-        'started_at': datetime.now().isoformat()
-    })
+# ========== ERROR HANDLERS ==========
 
-@app.route('/test-simple')
-def test_simple():
-    """Простой тестовый эндпоинт с фиксированными данными"""
-    return jsonify({
-        'test': 'success',
-        'categories': [
-            {'category': 'TEST1', 'name': 'Test Category 1', 'children': []},
-            {'category': 'TEST2', 'name': 'Test Category 2', 'children': []}
-        ],
-        'timestamp': datetime.now().isoformat()
-    })
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'error': 'Endpoint not found'}), 404
 
-# Обработчик выхода
-atexit.register(lambda: app.logger.info("Shutting down..."))
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({'error': 'Internal server error'}), 500
+
+# ========== MAIN ==========
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 10000))
     
-    # Инициализация при старте
-    if API_KEY:
-        background_thread = start_background_updater()
+    print("=" * 60)
+    print("OCS B2B API Wrapper")
+    print("=" * 60)
+    print(f"API Key configured: {'YES' if API_KEY else 'NO'}")
+    print(f"Server URL: http://0.0.0.0:{port}")
+    print("=" * 60)
     
     app.run(
-        host='0.0.0.0', 
-        port=port, 
-        threaded=True,
-        debug=False
+        host='0.0.0.0',
+        port=port,
+        debug=False  # False для production
     )
