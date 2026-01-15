@@ -18,7 +18,7 @@ class OCSClient:
                 'accept': 'application/json',
                 'X-API-Key': API_KEY,
             })
-            self.timeout = (10, 30)  # 10 сек на соединение, 30 на чтение
+            self.timeout = (10, 60)  # Увеличиваем таймаут до 60 секунд
     
     # === КАТЕГОРИИ ===
     def get_categories(self):
@@ -38,24 +38,14 @@ class OCSClient:
     
     # === ТОВАРЫ ПО КАТЕГОРИЯМ ===
     def get_products_by_category(self, category_code, shipment_city, params=None):
-        """
-        Получение товаров по категории
-        
-        Args:
-            category_code: Код категории или 'all' для всех
-            shipment_city: Город отгрузки
-            params: Дополнительные параметры
-        """
+        """Получение товаров по категории"""
         if not self.session:
             return {'error': 'API key not configured', 'products': []}
         
         try:
             url = f'{BASE_URL}/catalog/categories/{category_code}/products'
-            
-            # Базовые параметры
             query_params = {'shipmentcity': shipment_city}
             
-            # Добавляем дополнительные параметры
             if params:
                 query_params.update(params)
             
@@ -71,24 +61,14 @@ class OCSClient:
     
     # === ТОВАРЫ ПО СПИСКУ ID ===
     def get_products_by_ids(self, item_ids, shipment_city, params=None):
-        """
-        Получение товаров по списку ID
-        
-        Args:
-            item_ids: Список ID товаров через запятую или 'all'
-            shipment_city: Город отгрузки
-            params: Дополнительные параметры
-        """
+        """Получение товаров по списку ID"""
         if not self.session:
             return {'error': 'API key not configured', 'products': []}
         
         try:
             url = f'{BASE_URL}/catalog/products/{item_ids}'
-            
-            # Базовые параметры
             query_params = {'shipmentcity': shipment_city}
             
-            # Добавляем дополнительные параметры
             if params:
                 query_params.update(params)
             
@@ -102,41 +82,7 @@ class OCSClient:
         except Exception as e:
             return {'error': str(e), 'products': []}
     
-    # === BATCH ВЕРСИЯ ТОВАРОВ ПО ID ===
-    def get_products_batch(self, item_ids_list, shipment_city, params=None):
-        """
-        Batch версия получения товаров (POST запрос)
-        
-        Args:
-            item_ids_list: Список ID товаров ['1000459749', '1000459646', ...]
-            shipment_city: Город отгрузки
-            params: Дополнительные параметры
-        """
-        if not self.session:
-            return {'error': 'API key not configured', 'products': []}
-        
-        try:
-            url = f'{BASE_URL}/catalog/products/batch'
-            
-            # Базовые параметры
-            query_params = {'shipmentcity': shipment_city}
-            
-            # Добавляем дополнительные параметры
-            if params:
-                query_params.update(params)
-            
-            response = self.session.post(
-                url,
-                params=query_params,
-                json=item_ids_list,  # Тело запроса с массивом ID
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            return {'error': str(e), 'products': []}
-    
-    # === ПОЛУЧЕНИЕ ГОРОДОВ ОТГРУЗКИ ===
+    # === ГОРОДА ОТГРУЗКИ ===
     def get_shipment_cities(self):
         """Получение списка доступных городов отгрузки"""
         if not self.session:
@@ -152,7 +98,7 @@ class OCSClient:
         except Exception as e:
             return {'error': str(e), 'cities': []}
     
-    # === ПОЛУЧЕНИЕ ЛОКАЦИЙ ТОВАРА ===
+    # === ЛОКАЦИИ ТОВАРА ===
     def get_stock_locations(self, shipment_city):
         """Получение доступных местоположений товара"""
         if not self.session:
@@ -168,29 +114,6 @@ class OCSClient:
             return response.json()
         except Exception as e:
             return {'error': str(e), 'locations': []}
-    
-    # === ПОЛУЧЕНИЕ СЕРТИФИКАТОВ ===
-    def get_certificates(self, item_ids, actuality='actual'):
-        """
-        Получение сертификатов для товаров
-        
-        Args:
-            item_ids: Список ID товаров через запятую
-            actuality: 'actual' - только действующие, 'expired' - истекшие, 'all' - все
-        """
-        if not self.session:
-            return {'error': 'API key not configured', 'certificates': []}
-        
-        try:
-            response = self.session.get(
-                f'{BASE_URL}/catalog/products/{item_ids}/certificates',
-                params={'actuality': actuality},
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            return {'error': str(e), 'certificates': []}
 
 # Инициализация клиента
 client = OCSClient()
@@ -200,20 +123,16 @@ client = OCSClient()
 @app.route('/')
 def home():
     return jsonify({
-        'service': 'OCS B2B API Wrapper',
-        'version': '1.0',
+        'service': 'OCS B2B API',
+        'status': 'running',
         'endpoints': {
             'categories': '/categories',
             'products_by_category': '/products/category/<category>/<city>',
             'products_by_ids': '/products/ids/<item_ids>/<city>',
-            'products_batch': '/products/batch/<city> (POST)',
             'cities': '/cities',
             'locations': '/locations/<city>',
-            'certificates': '/certificates/<item_ids>',
-            'health': '/health',
-            'test': '/test'
-        },
-        'documentation': 'См. API-коннектор B2B документацию OCS'
+            'health': '/health'
+        }
     })
 
 @app.route('/categories')
@@ -223,64 +142,24 @@ def get_categories():
 
 @app.route('/products/category/<category>/<city>')
 def get_products_by_category(category, city):
-    """
-    Получение товаров по категории
-    
-    Query параметры:
-    - onlyavailable: true/false (только доступные)
-    - includeregular: true/false (кондиционные)
-    - includesale: true/false (распродажа)
-    - includeuncondition: true/false (некондиция)
-    - includemissing: true/false (отсутствующие)
-    """
+    """Получение товаров по категории"""
     params = {
         'onlyavailable': request.args.get('onlyavailable', 'true'),
         'includeregular': request.args.get('includeregular', 'true'),
         'includesale': request.args.get('includesale', 'false'),
         'includeuncondition': request.args.get('includeuncondition', 'false'),
-        'includemissing': request.args.get('includemissing', 'false'),
-        'withdescriptions': request.args.get('withdescriptions', 'true'),
     }
     return jsonify(client.get_products_by_category(category, city, params))
 
 @app.route('/products/ids/<item_ids>/<city>')
 def get_products_by_ids(item_ids, city):
-    """
-    Получение товаров по списку ID
-    
-    Query параметры (аналогично категориям)
-    """
+    """Получение товаров по списку ID"""
     params = {
         'includeregular': request.args.get('includeregular', 'true'),
         'includesale': request.args.get('includesale', 'false'),
         'includeuncondition': request.args.get('includeuncondition', 'false'),
     }
     return jsonify(client.get_products_by_ids(item_ids, city, params))
-
-@app.route('/products/batch/<city>', methods=['POST'])
-def get_products_batch(city):
-    """
-    Batch получение товаров (POST)
-    
-    Тело запроса: JSON массив ID товаров
-    ["1000459749", "1000459646", ...]
-    
-    Query параметры (аналогично)
-    """
-    if not request.is_json:
-        return jsonify({'error': 'Request must be JSON'}), 400
-    
-    item_ids = request.get_json()
-    if not isinstance(item_ids, list):
-        return jsonify({'error': 'Request body must be a list of item IDs'}), 400
-    
-    params = {
-        'includeregular': request.args.get('includeregular', 'true'),
-        'includesale': request.args.get('includesale', 'false'),
-        'includeuncondition': request.args.get('includeuncondition', 'false'),
-    }
-    
-    return jsonify(client.get_products_batch(item_ids, city, params))
 
 @app.route('/cities')
 def get_cities():
@@ -292,37 +171,24 @@ def get_locations(city):
     """Получение доступных местоположений товара"""
     return jsonify(client.get_stock_locations(city))
 
-@app.route('/certificates/<item_ids>')
-def get_certificates(item_ids):
-    """
-    Получение сертификатов для товаров
-    
-    Query параметры:
-    - actuality: actual/expired/all (по умолчанию: actual)
-    """
-    actuality = request.args.get('actuality', 'actual')
-    return jsonify(client.get_certificates(item_ids, actuality))
-
 @app.route('/health')
 def health():
     """Проверка здоровья API"""
     return jsonify({
         'status': 'ok',
-        'ocs_api_configured': bool(API_KEY),
-        'api_key_length': len(API_KEY) if API_KEY else 0
+        'ocs_api_configured': bool(API_KEY)
     })
 
 @app.route('/test')
 def test():
     """Тестовый эндпоинт"""
     return jsonify({
-        'message': 'OCS API Wrapper is working',
-        'endpoints_available': [
-            '/categories',
-            '/products/category/all/Москва',
-            '/products/ids/1000459749,1000459646/Москва',
+        'message': 'API is working',
+        'timestamp': '2026-01-15T08:00:00Z',
+        'test_endpoints': [
             '/cities',
-            '/locations/Москва'
+            '/health',
+            '/categories'
         ]
     })
 
@@ -340,16 +206,4 @@ def internal_error(error):
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 10000))
-    
-    print("=" * 60)
-    print("OCS B2B API Wrapper")
-    print("=" * 60)
-    print(f"API Key configured: {'YES' if API_KEY else 'NO'}")
-    print(f"Server URL: http://0.0.0.0:{port}")
-    print("=" * 60)
-    
-    app.run(
-        host='0.0.0.0',
-        port=port,
-        debug=False  # False для production
-    )
+    app.run(host='0.0.0.0', port=port)

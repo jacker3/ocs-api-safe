@@ -1,10 +1,10 @@
 # gunicorn_config.py
 import multiprocessing
 
-# Безопасные настройки для Render
-timeout = 30  # 30 секунд - короткий таймаут
-keepalive = 5
+# Увеличиваем таймаут для медленных запросов к OCS
+timeout = 120  # 120 секунд (2 минуты)
+keepalive = 65
 worker_class = 'sync'
-workers = 2  # Минимум воркеров для free плана
+workers = 2
 bind = '0.0.0.0:10000'
-preload_app = True  # Предзагрузка приложения
+preload_app = True
