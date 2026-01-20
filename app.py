@@ -4,26 +4,20 @@ import logging
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
-
 load_dotenv()
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 app = Flask(__name__)
 CORS(app)
-
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
     response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-API-Key')
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
-
 @app.route('/api/<path:path>', methods=['OPTIONS'])
 def options_handler(path):
     return '', 200
-
 class OCSAPI:
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -51,7 +45,6 @@ class OCSAPI:
         except Exception as e:
             logger.error(f"OCS API Exception: {e}")
             return None
-
     def get_categories(self):
         return self._make_request("catalog/categories")
     
@@ -70,11 +63,9 @@ class OCSAPI:
         params['search'] = search_term
         params['limit'] = params.get('limit', 50)
         return self._make_request(endpoint, params=params)
-
 # Инициализация API
 api_key = os.getenv('OCS_API_KEY')
 ocs_api = OCSAPI(api_key=api_key) if api_key else None
-
 @app.route('/')
 def home():
     return jsonify({
@@ -83,11 +74,9 @@ def home():
         "api_key_configured": bool(api_key),
         "cors_enabled": True
     })
-
 @app.route('/api/health')
 def health_check():
     return jsonify({"status": "healthy"})
-
 @app.route('/api/test')
 def test_api():
     if not ocs_api:
@@ -102,7 +91,6 @@ def test_api():
         "ocs_api_connection": "success" if cities else "failed",
         "available_cities": cities or []
     })
-
 @app.route('/api/categories')
 def get_categories():
     if not ocs_api:
@@ -115,7 +103,6 @@ def get_categories():
         "data": categories or [],
         "source": "ocs_api"
     })
-
 @app.route('/api/cities')
 def get_cities():
     if not ocs_api:
@@ -127,18 +114,20 @@ def get_cities():
         "success": True,
         "data": cities or []
     })
-
 @app.route('/api/products/category')
 def get_products_by_category():
     if not ocs_api:
-        return jsonify({"success": False, "error": "API ключ не настроen"}), 500
-    
+        return jsonify({"success": False, "error": "API ключ не настроен"}), 500
+        
     category = request.args.get('category', 'all')
     shipment_city = request.args.get('shipment_city', 'Красноярск')
-    
+
+    # Логируем параметры для отладки
+    #logger.info(f"Products request - category: '{category}', city: '{shipment_city}'")
+
     if category in ['undefined', 'null', '']:
         category = 'all'
-    
+
     products = ocs_api.get_products_by_category(
         categories=category,
         shipment_city=shipment_city
@@ -150,7 +139,6 @@ def get_products_by_category():
         "total_count": len(products.get('result', [])) if products else 0,
         "source": "ocs_api"
     })
-
 @app.route('/api/products/search')
 def search_products():
     if not ocs_api:
@@ -174,7 +162,6 @@ def search_products():
         "total_count": len(products.get('result', [])) if products else 0,
         "source": "ocs_api"
     })
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
