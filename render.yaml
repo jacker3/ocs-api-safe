@@ -1,14 +1,24 @@
 services:
   - type: web
-    name: ocs-api-wrapper
+    name: ocs-api-proxy
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn --config gunicorn_config.py app:app
     healthCheckPath: /health
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.4
       - key: PORT
         value: 10000
       - key: OCS_API_KEY
         sync: false
+      - key: FLASK_ENV
+        value: production
+      - key: RENDER
+        value: true
     autoDeploy: true
+    disk:
+      name: ocs-data
+      mountPath: /data
+      sizeGB: 1
