@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: ocs-api-proxy
+    name: ocs-full-api
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
@@ -13,12 +13,10 @@ services:
         value: 10000
       - key: OCS_API_KEY
         sync: false
+      - key: OCS_BASE_URL
+        sync: false
       - key: FLASK_ENV
         value: production
       - key: RENDER
         value: true
     autoDeploy: true
-    disk:
-      name: ocs-data
-      mountPath: /data
-      sizeGB: 1
