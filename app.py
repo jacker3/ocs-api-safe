@@ -18,7 +18,7 @@ class OCSClient:
                 'accept': 'application/json',
                 'X-API-Key': API_KEY,
             })
-            self.timeout = (10, 60)  # Увеличиваем таймаут до 60 секунд
+            self.timeout = (50, 80)  # Увеличиваем таймаут до 80 секунд
     
     # === КАТЕГОРИИ ===
     def get_categories(self):
