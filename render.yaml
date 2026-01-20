@@ -1,22 +1,15 @@
 services:
   - type: web
-    name: ocs-full-api
+    name: ocs-api
     env: python
     plan: free
+    branch: main
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --config gunicorn_config.py app:app
-    healthCheckPath: /health
+    startCommand: gunicorn --timeout 20 --workers 1 --preload app:app
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.4
-      - key: PORT
-        value: 10000
       - key: OCS_API_KEY
-        sync: false
-      - key: OCS_BASE_URL
-        sync: false
-      - key: FLASK_ENV
-        value: production
-      - key: RENDER
-        value: true
-    autoDeploy: true
+        value: your_ocs_api_key_here
+      - key: FLASK_DEBUG
+        value: "False"
+      - key: PYTHONUNBUFFERED
+        value: "True"
