@@ -5,6 +5,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 import sys
+from flask import request
 
 # Настройка логирования с максимальной детализацией
 logging.basicConfig(
@@ -20,7 +21,10 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
-
+@app.before_request
+def log_ip():
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    print(f"Request from IP: {ip}")
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
