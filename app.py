@@ -99,12 +99,14 @@ class OCSAPI:
         # Большие таймауты как запрошено
         self.timeout = (30, 120)  # 30 секунд на соединение, 120 на чтение
         
+        # Улучшенные заголовки
         self.session.headers.update({
             'accept': 'application/json',
             'X-API-Key': self.api_key,
             'User-Agent': f'OCS-Proxy/1.0 (Server-IP:{self.server_ip})',
             'Accept-Encoding': 'gzip, deflate',
-            'Connection': 'keep-alive'
+            'Connection': 'keep-alive',
+            'Cache-Control': 'no-cache'
         })
     
     def _make_request(self, endpoint: str, params=None):
@@ -119,11 +121,15 @@ class OCSAPI:
                 url, 
                 params=params, 
                 timeout=self.timeout,
-                verify=True
+                verify=True,
+                allow_redirects=True
             )
             request_duration = (datetime.datetime.now() - start_time).total_seconds()
             
             logger.info(f"Ответ OCS API: {response.status_code} за {request_duration:.2f}с")
+            
+            # Логируем заголовки для отладки
+            logger.debug(f"Заголовки ответа: {dict(response.headers)}")
             
             if response.status_code == 200:
                 try:
@@ -132,6 +138,7 @@ class OCSAPI:
                     return data
                 except Exception as e:
                     logger.error(f"Ошибка парсинга JSON: {e}")
+                    logger.error(f"Текст ответа: {response.text[:500]}")
                     return None
             else:
                 logger.error(f"Ошибка OCS API {response.status_code}: {response.text[:500]}")
@@ -139,6 +146,9 @@ class OCSAPI:
                 
         except requests.exceptions.Timeout as e:
             logger.error(f"Таймаут запроса к OCS API: {e}")
+            return None
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Ошибка подключения к OCS API: {e}")
             return None
         except Exception as e:
             logger.error(f"Ошибка OCS API: {type(e).__name__}: {e}")
@@ -316,7 +326,7 @@ def get_products_by_category():
     
     category = request.args.get('category', 'all')
     shipment_city = request.args.get('shipment_city', 'Красноярск')
-    limit = request.args.get('limit', 100, type=int)
+    limit = request.args.get('limit', 1000, type=int)
     search = request.args.get('search', None)
     
     logger.info(f"Товары: категория={category}, город={shipment_city}")
