@@ -1,15 +1,29 @@
 services:
   - type: web
-    name: ocs-api
+    name: ocs-raw-proxy
     env: python
-    plan: free
-    branch: main
+    region: Oregon  # Ближе к России
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --timeout 20 --workers 1 --preload app:app
+    startCommand: python app_raw.py
     envVars:
       - key: OCS_API_KEY
-        value: your_ocs_api_key_here
-      - key: FLASK_DEBUG
-        value: "False"
-      - key: PYTHONUNBUFFERED
-        value: "True"
+        sync: false
+      - key: PORT
+        value: 10000
+    healthCheckPath: /api/health
+    autoDeploy: true
+    
+    # Минимальные настройки безопасности
+    denyAllPolicy: false
+    
+    # Важно: отключаем все фильтры
+    advanced:
+      baseDirectory: /
+      dockerfilePath: 
+      buildFilter:
+        paths:
+          ignore: []
+        branches:
+          ignore: []
+        tags:
+          ignore: []
