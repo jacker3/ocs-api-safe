@@ -50,6 +50,18 @@ def get_server_ip():
         return SERVER_IP
     
     try:
+        # Попробуем получить локальный IP
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('8.8.8.8', 80))
+            SERVER_IP = s.getsockname()[0]
+            s.close()
+            logger.info(f"Локальный IP сервера: {SERVER_IP}")
+            return SERVER_IP
+        except:
+            pass
+        
+        # Если не получилось, пробуем внешние сервисы
         services = [
             'https://api.ipify.org',
             'https://ident.me',
@@ -66,15 +78,7 @@ def get_server_ip():
             except:
                 continue
         
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(('8.8.8.8', 80))
-            SERVER_IP = s.getsockname()[0]
-            s.close()
-            logger.info(f"Локальный IP сервера: {SERVER_IP}")
-        except:
-            SERVER_IP = 'unknown'
-            
+        SERVER_IP = 'unknown'
         return SERVER_IP
     except Exception as e:
         logger.error(f"Ошибка получения IP сервера: {e}")
@@ -108,7 +112,7 @@ class OCSAPI:
         try:
             url = f"{self.base_url}/{endpoint}"
             
-            logger.info(f"Запрос к OCS API: {endpoint}")
+            logger.info(f"Запрос к OCS API: {endpoint}, параметры: {params}")
             
             start_time = datetime.datetime.now()
             response = self.session.get(
@@ -150,9 +154,9 @@ class OCSAPI:
         logger.info("Запрос городов")
         return self._make_request("logistic/shipment/cities")
     
-    def get_products_by_category(self, categories: str, shipment_city: str, **params):
+    def get_products_by_category(self, category_id: str, shipment_city: str, **params):
         """Получение товаров по категории"""
-        endpoint = f"catalog/categories/{categories}/products"
+        endpoint = f"catalog/categories/{category_id}/products"
         
         base_params = {
             'shipmentcity': shipment_city,
@@ -162,7 +166,7 @@ class OCSAPI:
         if 'search' in params:
             base_params['search'] = params['search']
         
-        logger.info(f"Товары по категории: {categories}")
+        logger.info(f"Товары по категории: {category_id}, город: {shipment_city}")
         return self._make_request(endpoint, params=base_params)
     
     def search_products(self, search_term: str, shipment_city: str, **params):
@@ -175,7 +179,7 @@ class OCSAPI:
             'limit': params.get('limit', 100)
         }
         
-        logger.info(f"Поиск: {search_term}")
+        logger.info(f"Поиск: {search_term}, город: {shipment_city}")
         return self._make_request(endpoint, params=base_params)
 
 # Инициализация API
@@ -194,7 +198,7 @@ if api_key:
     logger.info(f"API ключ найден (длина: {len(api_key)})")
     ocs_api = OCSAPI(api_key=api_key)
 else:
-    logger.error("API ключ не найден!")
+    logger.error("API ключ не найден! Работа в демо-режиме.")
     ocs_api = None
 
 server_ip = get_server_ip()
@@ -225,8 +229,8 @@ def home():
         "endpoints": [
             "/api/categories",
             "/api/cities",
-            "/api/products/category",
-            "/api/products/search"
+            "/api/products/category?category=all&shipment_city=Красноярск",
+            "/api/products/search?q=ноутбук&shipment_city=Красноярск"
         ]
     })
 
@@ -237,12 +241,18 @@ def get_categories():
     client_ip = getattr(g, 'client_ip', 'unknown')
     
     if not ocs_api:
-        return jsonify({
-            "success": False,
-            "error": "API ключ не настроен",
+        # Демо-режим
+        demo_data = {
+            "success": True,
+            "data": [
+                {"id": "1", "name": "Демо категория 1"},
+                {"id": "2", "name": "Демо категория 2"}
+            ],
             "client_ip": client_ip,
-            "server_ip": server_ip
-        }), 500
+            "server_ip": server_ip,
+            "demo_mode": True
+        }
+        return jsonify(demo_data)
     
     logger.info(f"Запрос категорий от {client_ip}")
     categories = ocs_api.get_categories()
@@ -268,12 +278,19 @@ def get_cities():
     client_ip = getattr(g, 'client_ip', 'unknown')
     
     if not ocs_api:
-        return jsonify({
-            "success": False,
-            "error": "API ключ не настроен",
+        # Демо-режим
+        demo_data = {
+            "success": True,
+            "data": [
+                {"id": "1", "name": "Красноярск"},
+                {"id": "2", "name": "Москва"},
+                {"id": "3", "name": "Владивосток"}
+            ],
             "client_ip": client_ip,
-            "server_ip": server_ip
-        }), 500
+            "server_ip": server_ip,
+            "demo_mode": True
+        }
+        return jsonify(demo_data)
     
     cities = ocs_api.get_shipment_cities()
     
@@ -297,24 +314,52 @@ def get_products_by_category():
     """Получение товаров по категории"""
     client_ip = getattr(g, 'client_ip', 'unknown')
     
-    if not ocs_api:
-        return jsonify({
-            "success": False,
-            "error": "API ключ не настроен",
-            "client_ip": client_ip,
-            "server_ip": server_ip
-        }), 500
-    
     category = request.args.get('category', 'all')
     shipment_city = request.args.get('shipment_city', 'Красноярск')
     limit = request.args.get('limit', 100, type=int)
+    search = request.args.get('search', None)
     
     logger.info(f"Товары: категория={category}, город={shipment_city}")
     
+    if not ocs_api:
+        # Демо-режим
+        demo_data = {
+            "success": True,
+            "data": {
+                "products": [
+                    {
+                        "id": "1",
+                        "name": f"Демо товар для категории {category}",
+                        "price": 10000,
+                        "quantity": 5,
+                        "manufacturer": "Demo Manufacturer"
+                    },
+                    {
+                        "id": "2",
+                        "name": f"Еще один демо товар {category}",
+                        "price": 15000,
+                        "quantity": 3,
+                        "manufacturer": "Demo Manufacturer"
+                    }
+                ]
+            },
+            "client_ip": client_ip,
+            "server_ip": server_ip,
+            "demo_mode": True,
+            "category": category,
+            "shipment_city": shipment_city
+        }
+        return jsonify(demo_data)
+    
+    # Подготавливаем параметры
+    params = {'limit': limit}
+    if search:
+        params['search'] = search
+    
     products = ocs_api.get_products_by_category(
-        categories=category,
+        category_id=category,
         shipment_city=shipment_city,
-        limit=limit
+        **params
     )
     
     if products:
@@ -337,14 +382,6 @@ def search_products():
     """Поиск товаров"""
     client_ip = getattr(g, 'client_ip', 'unknown')
     
-    if not ocs_api:
-        return jsonify({
-            "success": False,
-            "error": "API ключ не настроен",
-            "client_ip": client_ip,
-            "server_ip": server_ip
-        }), 500
-    
     search_term = request.args.get('q', '')
     shipment_city = request.args.get('shipment_city', 'Красноярск')
     limit = request.args.get('limit', 100, type=int)
@@ -356,6 +393,36 @@ def search_products():
             "client_ip": client_ip,
             "server_ip": server_ip
         }), 400
+    
+    if not ocs_api:
+        # Демо-режим
+        demo_data = {
+            "success": True,
+            "data": {
+                "products": [
+                    {
+                        "id": "1",
+                        "name": f"Демо результат для '{search_term}'",
+                        "price": 12000,
+                        "quantity": 2,
+                        "manufacturer": "Demo Manufacturer"
+                    },
+                    {
+                        "id": "2",
+                        "name": f"Еще один результат '{search_term}'",
+                        "price": 18000,
+                        "quantity": 4,
+                        "manufacturer": "Demo Manufacturer"
+                    }
+                ]
+            },
+            "search_term": search_term,
+            "client_ip": client_ip,
+            "server_ip": server_ip,
+            "demo_mode": True,
+            "shipment_city": shipment_city
+        }
+        return jsonify(demo_data)
     
     products = ocs_api.search_products(
         search_term=search_term,
@@ -401,7 +468,7 @@ if __name__ == '__main__':
     logger.info("=" * 60)
     logger.info(f"Запуск OCS Proxy на порту {port}")
     logger.info(f"Сервер IP: {server_ip}")
-    logger.info(f"API ключ: {'Настроен' if api_key else 'Не настроен'}")
+    logger.info(f"API ключ: {'Настроен' if api_key else 'Не настроен (демо-режим)'}")
     logger.info("Таймауты: соединение 30с, чтение 120с")
     logger.info("=" * 60)
     
