@@ -1,29 +1,14 @@
 services:
   - type: web
-    name: ocs-raw-proxy
+    name: ocs-api-safe
     env: python
-    region: Oregon  # Ближе к России
+    plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python app.py
+    startCommand: gunicorn --config gunicorn_config.py app:app
+    healthCheckPath: /health
     envVars:
-      - key: OCS_API_KEY
-        sync: false
       - key: PORT
         value: 10000
-    healthCheckPath: /api/health
+      - key: OCS_API_KEY
+        sync: false
     autoDeploy: true
-    
-    # Минимальные настройки безопасности
-    denyAllPolicy: false
-    
-    # Важно: отключаем все фильтры
-    advanced:
-      baseDirectory: /
-      dockerfilePath: 
-      buildFilter:
-        paths:
-          ignore: []
-        branches:
-          ignore: []
-        tags:
-          ignore: []
