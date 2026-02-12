@@ -4,7 +4,7 @@ services:
     env: python
     region: Oregon  # Ближе к России
     buildCommand: pip install -r requirements.txt
-    startCommand: python app_raw.py
+    startCommand: python app.py
     envVars:
       - key: OCS_API_KEY
         sync: false
