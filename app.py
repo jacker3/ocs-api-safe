@@ -7,6 +7,807 @@ import logging
 from datetime import datetime, timedelta
 import time
 from functools import wraps
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+CORS(app)
+
+# ============ КОНФИГУРАЦИЯ ============
+API_KEY = os.getenv('OCS_API_KEY', '').strip()
+BASE_URL = os.getenv('OCS_BASE_URL', 'https://connector.b2b.ocs.ru/api/v2').strip()
+
+# Таймауты (connect, read) - увеличены для стабильности
+TIMEOUTS = {
+    'default': (10, 30),           # 10с коннект, 30с чтение
+    'categories': (10, 45),         # Дерево категорий может быть тяжёлым
+    'products_heavy': (15, 60),     # V08, V09, V02 - большие категории
+    'products_light': (10, 40),     # Обычные категории
+    'product_info': (5, 20),        # Инфо по одному товару
+    'cities': (5, 15),              # Города - лёгкий запрос
+    'currency': (5, 15),            # Курсы валют
+}
+
+# Кэш с TTL
+cache = {}
+CACHE_TTL = int(os.getenv('CACHE_TTL', 300))  # 5 минут по умолчанию
+
+# Статистика запросов
+request_stats = {}
+
+# ============ НАСТРОЙКА SESSION ============
+def create_session():
+    """Создаёт оптимизированную сессию с пулингом и ретраями"""
+    session = requests.Session()
+    
+    # Стратегия ретраев на уровне urllib3 (для сетевых ошибок)
+    retry_strategy = Retry(
+        total=1,  # 1 дополнительный ретрай на уровне urllib3
+        backoff_factor=0.3,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "POST", "HEAD", "OPTIONS"]
+    )
+    
+    adapter = HTTPAdapter(
+        max_retries=retry_strategy,
+        pool_connections=20,      # Количество пулов соединений
+        pool_maxsize=50,          # Макс соединений в пуле
+        pool_block=False          # Не блокировать при исчерпании пула
+    )
+    
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
+    
+    # Заголовки по умолчанию
+    if API_KEY:
+        session.headers.update({
+            'accept': 'application/json',
+            'X-API-Key': API_KEY,
+            'User-Agent': 'OCS-API-Proxy/2.2',
+            'Connection': 'keep-alive'
+        })
+        logger.info(f"API Key configured: {API_KEY[:8]}...")
+    else:
+        logger.warning("⚠️ OCS_API_KEY not set - requests may fail with 403")
+    
+    return session
+
+client_session = create_session()
+
+
+# ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
+def log_statistics(category, success, response_time, status_code=None):
+    """Логируем статистику по запросам"""
+    if category not in request_stats:
+        request_stats[category] = {
+            'total': 0, 'success': 0, 'failures': 0,
+            'timeouts': 0, 'avg_time': 0, 'last_times': [],
+            'last_status': None
+        }
+    
+    stats = request_stats[category]
+    stats['total'] += 1
+    stats['last_status'] = status_code
+    
+    if success:
+        stats['success'] += 1
+        stats['last_times'].append(response_time)
+        if len(stats['last_times']) > 10:
+            stats['last_times'].pop(0)
+        stats['avg_time'] = sum(stats['last_times']) / len(stats['last_times'])
+    else:
+        stats['failures'] += 1
+
+
+def get_timeout_for_endpoint(endpoint, category=None):
+    """Возвращает подходящие таймауты для эндпоинта"""
+    if '/categories' in endpoint and '/products' not in endpoint:
+        return TIMEOUTS['categories']
+    elif '/products' in endpoint:
+        if category in ['V08', 'V09', 'V02', 'V05']:
+            return TIMEOUTS['products_heavy']
+        return TIMEOUTS['products_light']
+    elif '/products/' in endpoint and endpoint.count('/') == 4:
+        return TIMEOUTS['product_info']
+    elif '/cities' in endpoint:
+        return TIMEOUTS['cities']
+    elif '/currencies' in endpoint:
+        return TIMEOUTS['currency']
+    return TIMEOUTS['default']
+
+
+def get_cache_key(prefix, **params):
+    """Генерирует ключ кэша из параметров"""
+    sorted_params = sorted((k, str(v)) for k, v in params.items())
+    param_str = '&'.join(f"{k}={v}" for k, v in sorted_params)
+    return f"{prefix}:{param_str}" if param_str else prefix
+
+
+# ============ КЛАСС OCS CLIENT ============
+class OCSClient:
+    def __init__(self, session=None):
+        self.session = session or create_session()
+    
+    def _make_request_with_retry(self, method, endpoint, params=None, data=None, 
+                               category=None, max_retries=3, base_delay=0.5):
+        """
+        Запрос с умными ретраями и кэш-фоллбэком
+        - Экспоненциальная задержка между попытками
+        - Возврат закэшированных данных при таймауте
+        - Детальное логирование
+        """
+        url = f"{BASE_URL}{endpoint}"
+        timeout = get_timeout_for_endpoint(endpoint, category)
+        cache_key = get_cache_key(endpoint.replace('/', '_'), **(params or {}))
+        
+        for attempt in range(max_retries + 1):
+            try:
+                # Небольшая задержка перед повторными попытками (экспоненциальная)
+                if attempt > 0:
+                    wait_time = base_delay * (2 ** (attempt - 1))  # 0.5s, 1s, 2s, 4s
+                    logger.info(f"Retry {attempt}/{max_retries} for {endpoint}, waiting {wait_time:.1f}s")
+                    time.sleep(wait_time)
+                
+                start_time = time.time()
+                
+                logger.debug(f"Request {method} {url} with params: {params}")
+                
+                response = self.session.request(
+                    method=method,
+                    url=url,
+                    params=params,
+                    json=data,
+                    timeout=timeout,
+                    headers={'Accept': 'application/json'}
+                )
+                
+                elapsed = time.time() - start_time
+                
+                if response.status_code == 200:
+                    logger.info(f"✓ Success: {endpoint} in {elapsed:.2f}s")
+                    return response.json(), elapsed, True, response.status_code
+                elif response.status_code == 429:
+                    # Rate limit — ждём указанное время
+                    retry_after = int(response.headers.get('retry-after', 60))
+                    logger.warning(f"⚠️ Rate limit (429) for {endpoint}, waiting {retry_after}s")
+                    if attempt < max_retries:
+                        time.sleep(min(retry_after, 120))  # Макс 2 минуты ожидания
+                        continue
+                elif response.status_code in [401, 403]:
+                    logger.error(f"✗ Auth error {response.status_code} for {endpoint}")
+                    return {'error': f'Authentication failed ({response.status_code})'}, 0, False, response.status_code
+                else:
+                    logger.warning(f"⚠️ HTTP {response.status_code} for {endpoint}")
+                    # Для 404 и других ошибок возвращаем ответ как есть
+                    if response.status_code == 404:
+                        return {'error': 'Not found', 'status': 404}, elapsed, False, response.status_code
+                    
+            except requests.exceptions.Timeout as e:
+                logger.warning(f"⏱️ Timeout attempt {attempt + 1}/{max_retries + 1} for {endpoint}: {str(e)}")
+                
+                # Фоллбэк на кэш при таймауте
+                if cache_key in cache:
+                    cached_data, cached_time = cache[cache_key]
+                    # Разрешаем использовать кэш с двойным TTL при ошибке
+                    if datetime.now().timestamp() - cached_time < CACHE_TTL * 2:
+                        logger.info(f"📦 Cache fallback for {endpoint} (stale data)")
+                        return cached_data, 0, True, 200  # Возвращаем как успех
+                
+                if attempt == max_retries:
+                    log_statistics(category or endpoint, False, 0, 'timeout')
+                    return {'error': f'Request timeout after {max_retries + 1} attempts'}, 0, False, None
+                    
+            except requests.exceptions.ConnectionError as e:
+                logger.warning(f"🔌 Connection error attempt {attempt + 1}: {str(e)}")
+                if attempt == max_retries:
+                    log_statistics(category or endpoint, False, 0, 'connection')
+                    return {'error': f'Connection failed: {str(e)}'}, 0, False, None
+                    
+            except requests.exceptions.RequestException as e:
+                logger.error(f"❌ Request error: {str(e)}")
+                if attempt == max_retries:
+                    log_statistics(category or endpoint, False, 0, 'error')
+                    return {'error': str(e)}, 0, False, None
+                    
+            except Exception as e:
+                logger.exception(f"💥 Unexpected error: {str(e)}")
+                if attempt == max_retries:
+                    return {'error': f'Unexpected error: {str(e)}'}, 0, False, None
+        
+        # Достигнут лимит попыток
+        log_statistics(category or endpoint, False, 0, 'max_retries')
+        return {'error': 'Max retries exceeded'}, 0, False, None
+    
+    def get_categories_tree(self):
+        """Дерево категорий"""
+        cache_key = 'categories_tree'
+        
+        # Проверка кэша
+        if cache_key in cache:
+            data, timestamp = cache[cache_key]
+            if datetime.now().timestamp() - timestamp < CACHE_TTL:
+                logger.info(f"📦 Cache hit for categories tree")
+                return data
+        
+        result, elapsed, success, status = self._make_request_with_retry(
+            'GET', '/catalog/categories',
+            category='categories_tree',
+            max_retries=3
+        )
+        
+        log_statistics('categories_tree', success, elapsed, status)
+        
+        if success and 'error' not in result:
+            cache[cache_key] = (result, datetime.now().timestamp())
+        
+        return result
+    
+    def get_categories_light(self):
+        """Лёгкий список основных категорий — без лимитов"""
+        cache_key = 'categories_light'
+        
+        if cache_key in cache:
+            data, timestamp = cache[cache_key]
+            if datetime.now().timestamp() - timestamp < CACHE_TTL:
+                return data
+        
+        tree = self.get_categories_tree()
+        
+        if 'error' in tree:
+            # Fallback: статичный список если API не отвечает
+            main_categories = [
+                {'category': 'V01', 'name': 'Apple'},
+                {'category': 'V02', 'name': 'Ноутбуки'},
+                {'category': 'V03', 'name': 'Компьютеры'},
+                {'category': 'V04', 'name': 'Мониторы'},
+                {'category': 'V05', 'name': 'Комплектующие'},
+                {'category': 'V06', 'name': 'Периферия'},
+                {'category': 'V07', 'name': 'Сетевое оборудование'},
+                {'category': 'V08', 'name': 'Серверы'},
+                {'category': 'V09', 'name': 'Офисная техника'},
+                {'category': 'V10', 'name': 'Программное обеспечение'},
+                {'category': 'V11', 'name': 'Гаджеты'},
+                {'category': 'V12', 'name': 'Телефоны'},
+                {'category': 'V13', 'name': 'ИБП'},
+                {'category': 'V70', 'name': 'Электронные компоненты'}
+            ]
+            result = {'categories': main_categories}
+            cache[cache_key] = (result, datetime.now().timestamp())
+            return result
+        
+        def extract_main_categories(category_tree, level=0):
+            main_cats = []
+            if isinstance(category_tree, dict):
+                if 'category' in category_tree and level == 0:
+                    main_cats.append({
+                        'category': category_tree.get('category'),
+                        'name': category_tree.get('name')
+                    })
+                if 'children' in category_tree:
+                    for child in category_tree['children']:
+                        main_cats.extend(extract_main_categories(child, level + 1))
+            elif isinstance(category_tree, list):
+                for item in category_tree:
+                    main_cats.extend(extract_main_categories(item, level))
+            return main_cats
+        
+        main_cats = extract_main_categories(tree)
+        result = {'categories': main_cats}  # ✅ Без [:20] — все категории
+        
+        cache[cache_key] = (result, datetime.now().timestamp())
+        return result
+    
+    def get_products_by_category(self, category, shipmentcity, **params):
+        """Товары по категории — без искусственных лимитов"""
+        cache_key = get_cache_key(f"products_{category}_{shipmentcity}", **params)
+        
+        # Проверка кэша
+        if cache_key in cache:
+            data, timestamp = cache[cache_key]
+            if datetime.now().timestamp() - timestamp < CACHE_TTL:
+                logger.info(f"📦 Cache hit for category {category}")
+                return data
+        
+        max_retries = 3 if category in ['V08', 'V09', 'V02', 'V05'] else 2
+        
+        endpoint = f"/catalog/categories/{category}/products"
+        query_params = {'shipmentcity': shipmentcity}
+        query_params.update(params)
+        
+        # Оптимизация: по умолчанию без описаний
+        if 'withdescriptions' not in query_params:
+            query_params['withdescriptions'] = 'false'
+        
+        result, elapsed, success, status = self._make_request_with_retry(
+            'GET', endpoint,
+            params=query_params,
+            category=category,
+            max_retries=max_retries
+        )
+        
+        log_statistics(category, success, elapsed, status)
+        
+        if success and 'error' not in result and isinstance(result, dict):
+            # ✅ Возвращаем ВСЕ товары из ответа API (без обрезки)
+            if 'result' in result and isinstance(result['result'], list):
+                logger.info(f"📦 Category {category}: returning {len(result['result'])} products")
+            cache[cache_key] = (result, datetime.now().timestamp())
+        
+        return result
+    
+    def get_products_paginated(self, category, shipmentcity, page=1, per_page=100, **params):
+        """Пагинация на стороне прокси"""
+        all_products = self.get_products_by_category(category, shipmentcity, **params)
+        
+        if 'error' in all_products:
+            return all_products
+        
+        if 'result' not in all_products or not isinstance(all_products['result'], list):
+            return {'error': 'Invalid response format', 'data': all_products}
+        
+        products = all_products['result']
+        total = len(products)
+        
+        # Ограничиваем per_page разумным значением
+        per_page = min(per_page, 500)
+        
+        start_idx = (page - 1) * per_page
+        end_idx = start_idx + per_page
+        
+        if start_idx >= total:
+            return {
+                'result': [],
+                'pagination': {
+                    'page': page, 'per_page': per_page, 'total': total,
+                    'total_pages': max(1, (total + per_page - 1) // per_page),
+                    'has_next': False, 'has_prev': page > 1
+                }
+            }
+        
+        paginated_products = products[start_idx:end_idx]
+        
+        return {
+            'result': paginated_products,
+            'pagination': {
+                'page': page, 'per_page': per_page, 'total': total,
+                'total_pages': max(1, (total + per_page - 1) // per_page),
+                'has_next': end_idx < total, 'has_prev': page > 1
+            },
+            'category': category,
+            'shipmentcity': shipmentcity
+        }
+    
+    def get_product_info(self, item_id, shipmentcity, **params):
+        """Информация по товару"""
+        cache_key = f"product_{item_id}_{shipmentcity}"
+        
+        if cache_key in cache:
+            data, timestamp = cache[cache_key]
+            if datetime.now().timestamp() - timestamp < CACHE_TTL:
+                return data
+        
+        endpoint = f"/catalog/products/{item_id}"
+        query_params = {'shipmentcity': shipmentcity}
+        query_params.update(params)
+        
+        result, elapsed, success, status = self._make_request_with_retry(
+            'GET', endpoint,
+            params=query_params,
+            category='product_info',
+            max_retries=2
+        )
+        
+        if success and 'error' not in result:
+            cache[cache_key] = (result, datetime.now().timestamp())
+        
+        return result
+    
+    def get_shipment_cities(self):
+        """Города отгрузки"""
+        cache_key = 'shipment_cities'
+        
+        if cache_key in cache:
+            data, timestamp = cache[cache_key]
+            if datetime.now().timestamp() - timestamp < CACHE_TTL:
+                return data
+        
+        result, elapsed, success, status = self._make_request_with_retry(
+            'GET', '/logistic/shipment/cities',
+            category='cities',
+            max_retries=2
+        )
+        
+        if success and 'error' not in result:
+            cache[cache_key] = (result, datetime.now().timestamp())
+        
+        return result
+    
+    def get_currency_exchanges(self):
+        """Курсы валют"""
+        cache_key = 'currency_exchanges'
+        
+        if cache_key in cache:
+            data, timestamp = cache[cache_key]
+            if datetime.now().timestamp() - timestamp < 300:
+                return data
+        
+        result, elapsed, success, status = self._make_request_with_retry(
+            'GET', '/account/currencies/exchanges',
+            category='currency',
+            max_retries=2
+        )
+        
+        if success and 'error' not in result:
+            cache[cache_key] = (result, datetime.now().timestamp() + 300)
+        
+        return result
+    
+    def get_category_stats(self):
+        """Статистика по категориям"""
+        return {
+            'total_categories_tracked': len(request_stats),
+            'categories': request_stats,
+            'problematic_categories': [
+                cat for cat, stats in request_stats.items() 
+                if stats.get('failures', 0) > stats.get('success', 0)
+            ]
+        }
+    
+    def clear_cache(self, pattern=None):
+        """Очистка кэша по паттерну"""
+        if pattern:
+            keys_to_delete = [k for k in cache.keys() if pattern in k]
+            for k in keys_to_delete:
+                del cache[k]
+            return len(keys_to_delete)
+        else:
+            count = len(cache)
+            cache.clear()
+            return count
+
+
+client = OCSClient(client_session)
+
+
+# ============ API ENDPOINTS ============
+
+@app.route('/')
+def home():
+    return jsonify({
+        'service': 'OCS API Proxy',
+        'status': 'operational',
+        'version': '2.2-timeout-fix',
+        'features': [
+            '✅ No artificial limits on categories/products',
+            '✅ Increased timeouts (up to 60s read)',
+            '✅ Exponential backoff retries',
+            '✅ Cache fallback on timeout',
+            '✅ Connection pooling (50 max)',
+            '✅ Smart timeout selection per endpoint'
+        ],
+        'endpoints': {
+            'cities': '/api/cities',
+            'categories': '/api/categories',
+            'categories_light': '/api/categories/light',
+            'products': '/api/categories/<category>/products?shipmentcity=...',
+            'products_paginated': '/api/categories/<category>/products/page/<int:page>?shipmentcity=...&per_page=...',
+            'product_info': '/api/products/<item_id>?shipmentcity=...',
+            'currency': '/api/currency',
+            'stats': '/api/stats',
+            'health': '/api/health',
+            'cache_clear': '/api/cache/clear'
+        },
+        'tips': [
+            'Use ?withdescriptions=false for faster product requests',
+            'Use pagination for large categories: ?page=1&per_page=100',
+            'Client-side caching recommended for production',
+            'Check /api/health for service status'
+        ]
+    })
+
+
+@app.route('/api/cities')
+def get_cities():
+    result = client.get_shipment_cities()
+    return jsonify(result)
+
+
+@app.route('/api/categories')
+def get_categories():
+    """Полное дерево категорий"""
+    result = client.get_categories_tree()
+    return jsonify(result)
+
+
+@app.route('/api/categories/light')
+def get_categories_light():
+    """Основные категории — БЕЗ лимита"""
+    result = client.get_categories_light()
+    return jsonify(result)
+
+
+@app.route('/api/categories/<category>/products')
+def get_category_products(category):
+    """Товары по категории — БЕЗ лимита"""
+    shipmentcity = request.args.get('shipmentcity')
+    if not shipmentcity:
+        return jsonify({'error': 'Parameter shipmentcity is required'}), 400
+    
+    params = {
+        'onlyavailable': request.args.get('onlyavailable', 'true'),
+        'includeregular': request.args.get('includeregular', 'true'),
+        'includesale': 'false',
+        'includeuncondition': 'false',
+        'includemissing': 'false',
+        'withdescriptions': request.args.get('withdescriptions', 'false'),
+    }
+    
+    for param in ['locations', 'producers', 'includesale', 'includeuncondition', 'includemissing']:
+        if param in request.args:
+            params[param] = request.args.get(param)
+    
+    result = client.get_products_by_category(category, shipmentcity, **params)
+    return jsonify(result)
+
+
+@app.route('/api/categories/<category>/products/page/<int:page>')
+def get_category_products_paginated(category, page):
+    """Товары с пагинацией — per_page до 500"""
+    shipmentcity = request.args.get('shipmentcity')
+    if not shipmentcity:
+        return jsonify({'error': 'Parameter shipmentcity is required'}), 400
+    
+    per_page = int(request.args.get('per_page', 100))
+    per_page = min(per_page, 500)  # Макс 500 для производительности
+    
+    params = {
+        'onlyavailable': request.args.get('onlyavailable', 'true'),
+        'includeregular': request.args.get('includeregular', 'true'),
+        'withdescriptions': request.args.get('withdescriptions', 'false'),
+    }
+    
+    result = client.get_products_paginated(category, shipmentcity, page, per_page, **params)
+    return jsonify(result)
+
+
+@app.route('/api/products/<item_id>')
+def get_product_info(item_id):
+    """Информация по товару"""
+    shipmentcity = request.args.get('shipmentcity')
+    if not shipmentcity:
+        return jsonify({'error': 'Parameter shipmentcity is required'}), 400
+    
+    params = {
+        'includeregular': request.args.get('includeregular', 'true'),
+        'withdescriptions': request.args.get('withdescriptions', 'true')
+    }
+    
+    result = client.get_product_info(item_id, shipmentcity, **params)
+    return jsonify(result)
+
+
+@app.route('/api/currency')
+def get_currency():
+    result = client.get_currency_exchanges()
+    return jsonify(result)
+
+
+@app.route('/api/stats')
+def get_stats():
+    stats = client.get_category_stats()
+    cache_info = {
+        'total_entries': len(cache),
+        'keys': list(cache.keys())[:20]
+    }
+    
+    return jsonify({
+        'request_statistics': stats,
+        'cache_info': cache_info,
+        'timestamp': datetime.now().isoformat()
+    })
+
+
+@app.route('/api/health')
+def health():
+    """Health check с проверкой подключения"""
+    health_status = 'healthy'
+    checks = {}
+    
+    # Быстрая проверка городов (лёгкий эндпоинт)
+    try:
+        cities = client.get_shipment_cities()
+        checks['cities_endpoint'] = 'ok' if 'error' not in cities else 'failed'
+        if checks['cities_endpoint'] == 'failed':
+            health_status = 'degraded'
+    except Exception as e:
+        checks['cities_endpoint'] = f'error: {str(e)}'
+        health_status = 'unhealthy'
+    
+    # Проверка кэша
+    checks['cache'] = 'ok' if len(cache) > 0 else 'empty'
+    
+    # Проблемные категории
+    problematic = [
+        cat for cat, stats in request_stats.items()
+        if stats.get('timeouts', 0) > 2 or stats.get('failures', 0) > stats.get('success', 0)
+    ]
+    
+    total_req = sum(s.get('total', 0) for s in request_stats.values())
+    total_ok = sum(s.get('success', 0) for s in request_stats.values())
+    
+    return jsonify({
+        'status': health_status,
+        'checks': checks,
+        'problematic_categories': problematic[:5],
+        'timestamp': datetime.now().isoformat(),
+        'uptime_checks': {
+            'total_requests': total_req,
+            'success_rate': f"{total_ok / max(1, total_req):.1%}" if total_req > 0 else 'N/A'
+        },
+        'config': {
+            'cache_ttl': CACHE_TTL,
+            'timeouts': TIMEOUTS
+        }
+    })
+
+
+@app.route('/api/cache/clear', methods=['POST', 'GET'])
+def clear_cache():
+    """Очистка кэша"""
+    pattern = request.args.get('pattern')
+    cleared = client.clear_cache(pattern)
+    return jsonify({
+        'message': f'Cache cleared: {cleared} entries',
+        'cleared_entries': cleared,
+        'pattern': pattern,
+        'timestamp': datetime.now().isoformat()
+    })
+
+
+@app.route('/api/tips')
+def get_tips():
+    return jsonify({
+        'performance_tips': [
+            'Use ?withdescriptions=false for 2-3x faster product requests',
+            'Use pagination for large categories: ?page=1&per_page=100',
+            'Cache responses client-side (localStorage/IndexedDB)',
+            'Request only needed fields via API parameters'
+        ],
+        'timeout_info': {
+            'categories': f"{TIMEOUTS['categories']}s (connect, read)",
+            'products_heavy': f"{TIMEOUTS['products_heavy']}s for V08/V09/V02/V05",
+            'products_light': f"{TIMEOUTS['products_light']}s for other categories"
+        },
+        'retry_policy': {
+            'max_attempts': 3,
+            'backoff': 'exponential (0.5s, 1s, 2s, 4s)',
+            'cache_fallback': 'enabled on timeout'
+        },
+        'recommended_flow': [
+            '1. GET /api/cities',
+            '2. GET /api/categories/light',
+            '3. GET /api/categories/{code}/products?shipmentcity=...&withdescriptions=false',
+            '4. GET /api/products/{id}?shipmentcity=... for details'
+        ]
+    })
+
+
+@app.route('/api/debug/connection')
+def debug_connection():
+    """Диагностика подключения к OCS API"""
+    import socket
+    import ssl
+    
+    result = {
+        'env_vars': {
+            'OCS_API_KEY_set': bool(API_KEY),
+            'BASE_URL': BASE_URL,
+            'CACHE_TTL': CACHE_TTL
+        },
+        'dns': {},
+        'ssl': {},
+        'test_request': {}
+    }
+    
+    # DNS lookup
+    try:
+        ip = socket.gethostbyname('connector.b2b.ocs.ru')
+        result['dns']['resolved'] = ip
+    except Exception as e:
+        result['dns']['error'] = str(e)
+    
+    # SSL check
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection(('connector.b2b.ocs.ru', 443), timeout=5) as sock:
+            with context.wrap_socket(sock, server_hostname='connector.b2b.ocs.ru') as ssock:
+                result['ssl']['version'] = ssock.version()
+                result['ssl']['cipher'] = ssock.cipher()[0]
+    except Exception as e:
+        result['ssl']['error'] = str(e)
+    
+    # Test request
+    try:
+        test_resp = client_session.get(
+            f"{BASE_URL}/catalog/categories",
+            headers={'accept': 'application/json'},
+            timeout=10
+        )
+        result['test_request'] = {
+            'status_code': test_resp.status_code,
+            'headers_sent': dict(client_session.headers)
+        }
+    except Exception as e:
+        result['test_request']['error'] = str(e)
+    
+    return jsonify(result)
+
+
+# Редирект старых URL
+@app.route('/content/<path:path>')
+@app.route('/catalog/<path:path>')
+@app.route('/logistic/<path:path>')
+def old_urls_redirect(path):
+    return jsonify({
+        'error': 'Endpoint moved',
+        'new_location': '/api/...',
+        'documentation': '/',
+        'timestamp': datetime.now().isoformat()
+    }), 404
+
+
+# Обработчик 404
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({
+        'error': 'Not found',
+        'available_endpoints': [
+            '/api/cities', '/api/categories', '/api/categories/light',
+            '/api/categories/<category>/products', '/api/products/<item_id>',
+            '/api/currency', '/api/stats', '/api/health'
+        ]
+    }), 404
+
+
+# Обработчик 500
+@app.errorhandler(500)
+def internal_error(e):
+    logger.error(f"Internal error: {str(e)}")
+    return jsonify({
+        'error': 'Internal server error',
+        'timestamp': datetime.now().isoformat()
+    }), 500
+
+
+if __name__ == '__main__':
+    port = int(os.getenv('PORT', 10000))
+    debug = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
+    
+    logger.info(f"Starting OCS API Proxy v2.2 on port {port}")
+    logger.info(f"Base URL: {BASE_URL}")
+    logger.info(f"Cache TTL: {CACHE_TTL}s")
+    
+    app.run(
+        host='0.0.0.0',
+        port=port,
+        debug=debug,
+        threaded=True
+    )import os
+import requests
+import json
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+import logging
+from datetime import datetime, timedelta
+import time
+from functools import wraps
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
