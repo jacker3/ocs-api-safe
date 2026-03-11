@@ -26,6 +26,11 @@ CACHE_TTL = 300  # 5 минут
 # Статистика запросов для мониторинга проблемных категорий
 request_stats = {}
 
+# ⭐ НОВЫЕ ЛИМИТЫ
+MAX_CATEGORIES = 405          # Было: 20
+MAX_PRODUCTS_PER_REQUEST = 5000  # Было: 100
+MAX_PAGINATION_PER_PAGE = 500    # Для пагинации (баланс производительности)
+
 def log_statistics(category, success, response_time):
     """Логируем статистику по запросам"""
     if category not in request_stats:
@@ -42,7 +47,6 @@ def log_statistics(category, success, response_time):
     
     if success:
         stats['success'] += 1
-        # Храним последние 10 успешных времен
         stats['last_times'].append(response_time)
         if len(stats['last_times']) > 10:
             stats['last_times'].pop(0)
@@ -57,7 +61,7 @@ class OCSClient:
             self.session.headers.update({
                 'accept': 'application/json',
                 'X-API-Key': API_KEY,
-                'User-Agent': 'OCS-API/1.0'
+                'User-Agent': 'OCS-API/2.1-large-limits'
             })
     
     def _make_request_with_retry(self, method, endpoint, params=None, data=None, 
@@ -67,7 +71,6 @@ class OCSClient:
             try:
                 url = f"{BASE_URL}{endpoint}"
                 
-                # Для повторных попыток добавляем небольшую задержку
                 if attempt > 0:
                     wait_time = 0.5 * attempt
                     logger.info(f"Retry {attempt} for {endpoint}, waiting {wait_time}s")
@@ -112,17 +115,17 @@ class OCSClient:
         """Дерево категорий с ретраями"""
         cache_key = 'categories_tree'
         
-        # Проверяем кэш
         if cache_key in cache:
             data, timestamp = cache[cache_key]
             if datetime.now().timestamp() - timestamp < CACHE_TTL:
                 logger.info(f"Cache hit for categories tree")
                 return data
         
+        # ⭐ Увеличен таймаут для большого дерева категорий
         result, elapsed, success = self._make_request_with_retry(
             'GET', '/catalog/categories',
             max_retries=max_retries,
-            timeout=(5, 20)  # Увеличиваем таймаут для дерева
+            timeout=(10, 60)  # Было: (5, 20)
         )
         
         log_statistics('categories_tree', success, elapsed)
@@ -133,7 +136,7 @@ class OCSClient:
         return result
     
     def get_categories_light(self):
-        """Легкая версия - только основные категории без дерева"""
+        """Легкая версия - основные категории (до 405)"""
         cache_key = 'categories_light'
         
         if cache_key in cache:
@@ -141,12 +144,16 @@ class OCSClient:
             if datetime.now().timestamp() - timestamp < CACHE_TTL:
                 return data
         
-        # Пробуем получить дерево
         tree = self.get_categories_tree()
         
         if 'error' in tree:
-            # Если не получается дерево, возвращаем статичный список основных категорий
+            # Fallback: расширенный статичный список
             main_categories = [
+                {'category': f'V{i:02d}', 'name': f'Категория {i}'} 
+                for i in range(1, min(MAX_CATEGORIES + 1, 101))
+            ]
+            # Добавляем реальные основные категории
+            real_cats = [
                 {'category': 'V01', 'name': 'Apple'},
                 {'category': 'V02', 'name': 'Ноутбуки'},
                 {'category': 'V03', 'name': 'Компьютеры'},
@@ -162,11 +169,14 @@ class OCSClient:
                 {'category': 'V13', 'name': 'ИБП'},
                 {'category': 'V70', 'name': 'Электронные компоненты'}
             ]
-            result = {'categories': main_categories}
+            # Объединяем и убираем дубликаты
+            seen = set()
+            main_categories = [c for c in real_cats + main_categories 
+                             if not (c['category'] in seen or seen.add(c['category']))]
+            result = {'categories': main_categories[:MAX_CATEGORIES]}
             cache[cache_key] = (result, datetime.now().timestamp())
             return result
         
-        # Извлекаем только основные категории (первый уровень)
         def extract_main_categories(category_tree, level=0):
             main_cats = []
             if isinstance(category_tree, dict):
@@ -184,64 +194,63 @@ class OCSClient:
             return main_cats
         
         main_cats = extract_main_categories(tree)
-        result = {'categories': main_cats[:20]}  # Ограничиваем 20 категориями
+        # ⭐ УВЕЛИЧЕНО: возвращаем до 405 категорий (было 20)
+        result = {'categories': main_cats[:MAX_CATEGORIES]}
         
         cache[cache_key] = (result, datetime.now().timestamp())
+        logger.info(f"Returning {len(result['categories'])} categories (max: {MAX_CATEGORIES})")
         return result
     
     def get_products_by_category(self, category, shipmentcity, **params):
-        """Товары по категории с оптимизациями"""
-        cache_key = f"products_{category}_{shipmentcity}_{str(params)}"
+        """Товары по категории — до 5000 товаров"""
+        cache_key = f"products_{category}_{shipmentcity}_{str(sorted(params.items()))}"
         
-        # Проверяем кэш
         if cache_key in cache:
             data, timestamp = cache[cache_key]
             if datetime.now().timestamp() - timestamp < CACHE_TTL:
                 logger.info(f"Cache hit for category {category}")
                 return data
         
-        # Проблемные категории получаем с ретраями
-        max_retries = 2 if category in ['V08', 'V09', 'V02'] else 1
+        # ⭐ Проблемные категории: больше ретраев и таймаут
+        is_heavy = category in ['V08', 'V09', 'V02', 'V05']
+        max_retries = 3 if is_heavy else 2
+        timeout = (15, 90) if is_heavy else (10, 45)  # ⭐ Увеличено для 5000 товаров
         
         endpoint = f"/catalog/categories/{category}/products"
         query_params = {'shipmentcity': shipmentcity}
         query_params.update(params)
         
-        # ОПТИМИЗАЦИЯ: Отключаем описания для ускорения
+        # Оптимизация: по умолчанию без описаний
         if 'withdescriptions' not in query_params:
             query_params['withdescriptions'] = 'false'
-        
-        # ОПТИМИЗАЦИЯ: Ограничиваем количество возвращаемых товаров
-        if 'limit' not in query_params and 'top' not in query_params:
-            # Не добавляем лимит в запрос, но логируем
-            logger.info(f"Requesting category {category} without limit")
         
         result, elapsed, success = self._make_request_with_retry(
             'GET', endpoint,
             params=query_params,
             max_retries=max_retries,
-            timeout=(5, 20) if category in ['V08', 'V09', 'V02'] else (5, 15)
+            timeout=timeout
         )
         
         log_statistics(category, success, elapsed)
         
         if success and isinstance(result, dict):
-            # Ограничиваем количество товаров в ответе для тяжелых категорий
             if 'result' in result and isinstance(result['result'], list):
-                if len(result['result']) > 100 and category in ['V08', 'V09', 'V02']:
-                    result['result'] = result['result'][:100]
-                    result['warning'] = f'Limited to 100 products, total: {len(result["result"])}'
-                    result['suggestion'] = 'Use pagination or filter by subcategories'
-            
-            cache[cache_key] = (result, datetime.now().timestamp())
+                total_products = len(result['result'])
+                logger.info(f"Category {category}: received {total_products} products")
+                
+                # ⭐ УВЕЛИЧЕНО: лимит до 5000 товаров (было 100)
+                if total_products > MAX_PRODUCTS_PER_REQUEST:
+                    result['result'] = result['result'][:MAX_PRODUCTS_PER_REQUEST]
+                    result['warning'] = f'Limited to {MAX_PRODUCTS_PER_REQUEST} products, total available: {total_products}'
+                    result['suggestion'] = 'Use pagination endpoint for full access'
+                    logger.warning(f"Category {category} limited to {MAX_PRODUCTS_PER_REQUEST} products")
+                
+                cache[cache_key] = (result, datetime.now().timestamp())
         
         return result
     
-    def get_products_paginated(self, category, shipmentcity, page=1, per_page=50, **params):
-        """Пагинация товаров по категории"""
-        # В реальности API OCS не поддерживает пагинацию,
-        # но мы можем эмулировать её на нашей стороне
-        
+    def get_products_paginated(self, category, shipmentcity, page=1, per_page=100, **params):
+        """Пагинация товаров — до 500 на страницу для производительности"""
         all_products = self.get_products_by_category(category, shipmentcity, **params)
         
         if 'error' in all_products:
@@ -253,7 +262,9 @@ class OCSClient:
         products = all_products['result']
         total = len(products)
         
-        # Вычисляем индексы для пагинации
+        # ⭐ Ограничиваем per_page для стабильности (макс 500)
+        per_page = min(per_page, MAX_PAGINATION_PER_PAGE)
+        
         start_idx = (page - 1) * per_page
         end_idx = start_idx + per_page
         
@@ -264,7 +275,7 @@ class OCSClient:
                     'page': page,
                     'per_page': per_page,
                     'total': total,
-                    'total_pages': (total + per_page - 1) // per_page,
+                    'total_pages': max(1, (total + per_page - 1) // per_page),
                     'has_next': False,
                     'has_prev': page > 1
                 }
@@ -278,7 +289,7 @@ class OCSClient:
                 'page': page,
                 'per_page': per_page,
                 'total': total,
-                'total_pages': (total + per_page - 1) // per_page,
+                'total_pages': max(1, (total + per_page - 1) // per_page),
                 'has_next': end_idx < total,
                 'has_prev': page > 1
             },
@@ -302,7 +313,7 @@ class OCSClient:
         result, elapsed, success = self._make_request_with_retry(
             'GET', endpoint,
             params=query_params,
-            timeout=(3, 10)
+            timeout=(3, 15)
         )
         
         if success:
@@ -321,7 +332,7 @@ class OCSClient:
         
         result, elapsed, success = self._make_request_with_retry(
             'GET', '/logistic/shipment/cities',
-            timeout=(3, 10)
+            timeout=(3, 15)
         )
         
         if success:
@@ -333,15 +344,14 @@ class OCSClient:
         """Курсы валют"""
         cache_key = 'currency_exchanges'
         
-        # Кэшируем на 5 минут
         if cache_key in cache:
             data, timestamp = cache[cache_key]
-            if datetime.now().timestamp() - timestamp < 300:  # 5 минут
+            if datetime.now().timestamp() - timestamp < 300:
                 return data
         
         result, elapsed, success = self._make_request_with_retry(
             'GET', '/account/currencies/exchanges',
-            timeout=(3, 10)
+            timeout=(3, 15)
         )
         
         if success:
@@ -369,90 +379,96 @@ def home():
     return jsonify({
         'service': 'OCS API Proxy',
         'status': 'operational',
-        'version': '2.0',
+        'version': '2.1-large-limits',
+        'limits': {
+            'max_categories': MAX_CATEGORIES,
+            'max_products_per_request': MAX_PRODUCTS_PER_REQUEST,
+            'max_pagination_per_page': MAX_PAGINATION_PER_PAGE
+        },
         'features': [
-            'Retry mechanism for failed requests',
-            'Smart caching (5 minutes TTL)',
-            'Pagination support',
-            'Category statistics',
-            'Optimized timeouts'
+            '✅ Support for up to 405 categories',
+            '✅ Up to 5000 products per category request',
+            '✅ Retry mechanism for failed requests',
+            '✅ Smart caching (5 minutes TTL)',
+            '✅ Pagination support',
+            '✅ Category statistics',
+            '✅ Optimized timeouts for large responses'
         ],
         'endpoints': {
             'cities': '/api/cities',
             'categories': '/api/categories',
             'categories_light': '/api/categories/light',
             'products': '/api/categories/<category>/products?shipmentcity=...',
-            'products_paginated': '/api/categories/<category>/products/page/<int:page>?shipmentcity=...',
+            'products_paginated': '/api/categories/<category>/products/page/<int:page>?shipmentcity=...&per_page=...',
             'product_info': '/api/products/<item_id>?shipmentcity=...',
             'currency': '/api/currency',
             'stats': '/api/stats',
             'health': '/api/health'
         },
         'tips': [
-            'Use /api/categories/light for faster category list',
-            'Problematic categories (V08, V09, V02) have automatic retries',
-            'Add withdescriptions=false to speed up product requests',
-            'Use pagination for categories with many products'
+            f'Use /api/categories/light for up to {MAX_CATEGORIES} categories',
+            f'Heavy categories (V08, V09, V02) support up to {MAX_PRODUCTS_PER_REQUEST} products',
+            'Add ?withdescriptions=false to speed up product requests',
+            'Use pagination for better performance: ?page=1&per_page=100'
         ]
     })
 
 @app.route('/api/cities')
 def get_cities():
-    """Города отгрузки"""
     result = client.get_shipment_cities()
     return jsonify(result)
 
 @app.route('/api/categories')
 def get_categories():
-    """Полное дерево категорий (может быть медленным)"""
+    """Полное дерево категорий"""
     result = client.get_categories_tree()
     return jsonify(result)
 
 @app.route('/api/categories/light')
 def get_categories_light():
-    """Легкий список основных категорий"""
+    """Основные категории — до 405"""
     result = client.get_categories_light()
     return jsonify(result)
 
 @app.route('/api/categories/<category>/products')
 def get_category_products(category):
-    """Товары по категории"""
+    """Товары по категории — до 5000 товаров"""
     shipmentcity = request.args.get('shipmentcity')
     if not shipmentcity:
         return jsonify({'error': 'Parameter shipmentcity is required'}), 400
     
-    # Параметры для оптимизации
     params = {
         'onlyavailable': request.args.get('onlyavailable', 'true'),
         'includeregular': request.args.get('includeregular', 'true'),
         'includesale': 'false',
         'includeuncondition': 'false',
         'includemissing': 'false',
-        'withdescriptions': request.args.get('withdescriptions', 'false'),  # По умолчанию false для скорости
+        'withdescriptions': request.args.get('withdescriptions', 'false'),
     }
     
-    # Дополнительные параметры
     for param in ['locations', 'producers', 'includesale', 'includeuncondition', 'includemissing']:
         if param in request.args:
             params[param] = request.args.get(param)
     
-    # Проверяем проблемные категории
-    if category in ['V08', 'V09', 'V02']:
-        params['warning'] = 'This category may be slow. Using retry mechanism.'
+    is_heavy = category in ['V08', 'V09', 'V02', 'V05']
+    if is_heavy:
+        params['note'] = f'Heavy category: timeout up to 90s, limit {MAX_PRODUCTS_PER_REQUEST} products'
     
     result = client.get_products_by_category(category, shipmentcity, **params)
     return jsonify(result)
 
 @app.route('/api/categories/<category>/products/page/<int:page>')
 def get_category_products_paginated(category, page):
-    """Товары по категории с пагинацией"""
+    """Товары с пагинацией"""
     shipmentcity = request.args.get('shipmentcity')
     if not shipmentcity:
         return jsonify({'error': 'Parameter shipmentcity is required'}), 400
     
-    per_page = int(request.args.get('per_page', 50))
-    if per_page > 100:
-        per_page = 100
+    per_page = int(request.args.get('per_page', 100))
+    # ⭐ Ограничиваем per_page для стабильности
+    if per_page > MAX_PAGINATION_PER_PAGE:
+        per_page = MAX_PAGINATION_PER_PAGE
+        logger.warning(f"per_page limited to {MAX_PAGINATION_PER_PAGE} for performance")
     
     params = {
         'onlyavailable': request.args.get('onlyavailable', 'true'),
@@ -480,13 +496,11 @@ def get_product_info(item_id):
 
 @app.route('/api/currency')
 def get_currency():
-    """Курсы валют"""
     result = client.get_currency_exchanges()
     return jsonify(result)
 
 @app.route('/api/stats')
 def get_stats():
-    """Статистика запросов"""
     stats = client.get_category_stats()
     cache_info = {
         'total_entries': len(cache),
@@ -501,8 +515,6 @@ def get_stats():
 
 @app.route('/api/health')
 def health():
-    """Health check с проверкой основных функций"""
-    # Проверяем быстрые эндпоинты
     cities = client.get_shipment_cities()
     currency = client.get_currency_exchanges()
     
@@ -516,11 +528,13 @@ def health():
     if 'failed' in checks.values():
         health_status = 'degraded'
     
-    # Проверяем проблемные категории
-    problematic = []
-    for category, stats in request_stats.items():
-        if stats.get('failures', 0) > 2 and stats.get('success', 0) == 0:
-            problematic.append(category)
+    problematic = [
+        cat for cat, stats in request_stats.items() 
+        if stats.get('failures', 0) > 2 and stats.get('success', 0) == 0
+    ]
+    
+    total_req = sum(stats.get('total', 0) for stats in request_stats.values())
+    total_ok = sum(stats.get('success', 0) for stats in request_stats.values())
     
     return jsonify({
         'status': health_status,
@@ -528,41 +542,45 @@ def health():
         'problematic_categories': problematic[:5],
         'timestamp': datetime.now().isoformat(),
         'uptime_checks': {
-            'total_requests': sum(stats.get('total', 0) for stats in request_stats.values()),
-            'success_rate': f"{sum(stats.get('success', 0) for stats in request_stats.values()) / max(1, sum(stats.get('total', 0) for stats in request_stats.values())):.1%}"
+            'total_requests': total_req,
+            'success_rate': f"{total_ok / max(1, total_req):.1%}"
+        },
+        'limits': {
+            'max_categories': MAX_CATEGORIES,
+            'max_products': MAX_PRODUCTS_PER_REQUEST
         }
     })
 
 @app.route('/api/cache/clear')
 def clear_cache():
-    """Очистка кэша"""
     cache.clear()
     return jsonify({
         'message': 'Cache cleared',
-        'cleared_entries': len(cache),
+        'cleared_entries': 0,
         'timestamp': datetime.now().isoformat()
     })
 
 @app.route('/api/tips')
 def get_tips():
-    """Советы по использованию API"""
     return jsonify({
         'performance_tips': [
-            '1. Use /api/categories/light instead of /api/categories for faster loading',
-            '2. Add ?withdescriptions=false to product requests for 2-3x speedup',
-            '3. Use pagination for large categories: /api/categories/V01/products/page/1',
-            '4. Cache responses on your client side (browser/local storage)',
-            '5. Request only needed fields - avoid includesale/includeuncondition if not needed'
+            f'Use /api/categories/light for up to {MAX_CATEGORIES} categories',
+            f'Heavy categories return up to {MAX_PRODUCTS_PER_REQUEST} products',
+            'Add ?withdescriptions=false for 2-3x faster product requests',
+            'Use pagination for large result sets: ?page=1&per_page=100',
+            'Cache responses client-side for production'
         ],
-        'problem_categories': [
-            'V08, V09, V02 - these categories are large and may timeout',
-            'Use pagination or limit results for these categories'
-        ],
+        'timeout_info': {
+            'heavy_categories': 'Up to 90s for V08/V09/V02 with 5000 products',
+            'light_categories': 'Up to 45s for other categories',
+            'pagination': 'Up to 45s per page (500 products)'
+        },
         'recommended_flow': [
-            '1. GET /api/cities - get available cities',
-            '2. GET /api/categories/light - get main categories',
+            '1. GET /api/cities',
+            '2. GET /api/categories/light',
             '3. GET /api/categories/{code}/products?shipmentcity=...&withdescriptions=false',
-            '4. For details: GET /api/products/{id}?shipmentcity=...'
+            '4. Use pagination for large categories: /page/1?per_page=100',
+            '5. GET /api/products/{id}?shipmentcity=... for details'
         ]
     })
 
@@ -580,20 +598,22 @@ def test_category(category):
         'shipmentcity': shipmentcity,
         'response_time': f"{elapsed:.2f}s",
         'result': 'success' if 'error' not in result else 'failed',
+        'limits': {
+            'max_categories': MAX_CATEGORIES,
+            'max_products': MAX_PRODUCTS_PER_REQUEST
+        },
         'details': result if 'error' in result else {
             'products_count': len(result.get('result', [])),
-            'has_more': len(result.get('result', [])) > 100
+            'has_more': len(result.get('result', [])) >= MAX_PRODUCTS_PER_REQUEST
         }
     }
     
     return jsonify(response)
 
-# Обработчик 404 для старых URL
 @app.route('/content/<path:path>')
 @app.route('/catalog/<path:path>')
 @app.route('/logistic/<path:path>')
 def old_urls_redirect(path):
-    """Редирект старых URL на новые"""
     return jsonify({
         'error': 'Endpoint moved',
         'new_location': '/api/...',
@@ -601,9 +621,33 @@ def old_urls_redirect(path):
         'timestamp': datetime.now().isoformat()
     }), 404
 
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({
+        'error': 'Not found',
+        'available_endpoints': [
+            '/api/cities', '/api/categories', '/api/categories/light',
+            '/api/categories/<category>/products', '/api/products/<item_id>',
+            '/api/currency', '/api/stats', '/api/health'
+        ]
+    }), 404
+
+@app.errorhandler(500)
+def internal_error(e):
+    logger.error(f"Internal error: {str(e)}")
+    return jsonify({
+        'error': 'Internal server error',
+        'timestamp': datetime.now().isoformat()
+    }), 500
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 10000))
     debug = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
+    
+    logger.info(f"Starting OCS API Proxy v2.1-large-limits on port {port}")
+    logger.info(f"Max categories: {MAX_CATEGORIES}")
+    logger.info(f"Max products per request: {MAX_PRODUCTS_PER_REQUEST}")
+    logger.info(f"Max pagination per page: {MAX_PAGINATION_PER_PAGE}")
     
     app.run(
         host='0.0.0.0',
